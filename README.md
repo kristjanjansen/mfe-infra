@@ -9,11 +9,13 @@ https://kristjanjansen.github.io/mf-infra/
 ## Links to repos
 
 https://github.com/kristjanjansen/mf-host-web
+
 https://github.com/kristjanjansen/mf-host-expo
 
 https://github.com/kristjanjansen/mf-frontends
 
 https://github.com/kristjanjansen/mf-api
+
 https://github.com/kristjanjansen/mf-translations
 
 ## Overview
