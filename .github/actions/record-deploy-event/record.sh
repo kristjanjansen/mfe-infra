@@ -22,7 +22,7 @@ REF="${GITHUB_REF:-}"
 SERVER_URL="${GITHUB_SERVER_URL:-https://github.com}"
 RUN_URL="${SERVER_URL}/${SOURCE_REPO}/actions/runs/${RUN_ID}"
 
-EVENT_DIR="${ROOT_DIR}/events/${Y}/${M}/${D}"
+EVENT_DIR="${ROOT_DIR}/deploys/${Y}/${M}/${D}"
 mkdir -p "${EVENT_DIR}"
 
 SAFE_REPO="${SOURCE_REPO//\//_}"

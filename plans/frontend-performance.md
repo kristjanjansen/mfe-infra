@@ -19,7 +19,7 @@ MFEs load sequentially:
 1. Host HTML loads
 2. Host JS loads
 3. Host fetches config
-4. Host creates `<mfe-shell>` element
+4. Host creates `<mfe-layout>` element
 5. Shell script loads (dynamic `<script>` injection)
 6. Shell renders, creates slots
 7. Content MFE script loads
@@ -104,9 +104,9 @@ Result: shared packages load once from the host, cached by the browser. MFE bund
 The deploy script knows all MFE URLs (from `.env.services`). Inject `<link rel="modulepreload">` into the host's `index.html` at deploy time so the browser starts fetching before the host JS even runs:
 
 ```html
-<!-- Always preload shell (needed on every page) + vendor bundles -->
+<!-- Always preload layout (needed on every page) + vendor bundles -->
 <link rel="modulepreload" href="/vendor/react.js" />
-<link rel="modulepreload" href="https://mfe-shell-rel-0-1-3.mfe.fachwerk.dev/index.js" />
+<link rel="modulepreload" href="https://mfe-layout-rel-0-1-3.mfe.fachwerk.dev/index.js" />
 ```
 
 Route MFEs (billing, dashboard) are prefetched on idle instead — see section 3. No need to preload all of them upfront.
@@ -134,7 +134,7 @@ Result: by the time the user clicks a nav item, the MFE script is already cached
 ### 4. Lazy Load Non-Critical MFEs
 
 Not all MFEs need to load immediately:
-- **Critical (load immediately):** shell, current route's MFE
+- **Critical (load immediately):** layout, current route's MFE
 - **Deferred (load after first render):** cookiebot, devtools
 - **Prefetched (load on idle):** other route MFEs
 
@@ -142,7 +142,7 @@ The host controls loading order:
 
 ```typescript
 // Load critical MFEs first
-await loadMfeScript(mfs.shell);
+await loadMfeScript(mfs.layout);
 await loadMfeScript(mfs[currentRoute]);
 
 // Defer non-critical
@@ -201,7 +201,7 @@ Benefits:
 | Optimization | Effort | Transfer saved | Speed improvement |
 |-------------|--------|----------------|------------------|
 | Import maps (shared deps) | Medium | ~300KB gzipped | Initial load ~1-2s faster on 3G, ~200-400ms on 4G |
-| Preload shell + vendor | Low | 0 (same bytes, earlier) | First paint ~300-500ms faster (eliminates waterfall) |
+| Preload layout + vendor | Low | 0 (same bytes, earlier) | First paint ~300-500ms faster (eliminates waterfall) |
 | Prefetch route MFEs on idle | Low | 0 (same bytes, earlier) | Route navigation ~200-500ms → near-instant |
 | Lazy load non-critical | Low | ~50-100KB deferred | First interactive ~100-200ms faster |
 | Separate CSS loading | Low | 0 (better caching) | Repeat visits ~50-100ms faster |

@@ -2,7 +2,7 @@
 
 ## Goal
 
-1. Merge `mfe-layout` and `mfe-navigation` into a single `mfe-shell` microfrontend
+1. Merge `mfe-layout` and `mfe-navigation` into a single `mfe-layout` microfrontend
 2. Replace the current mixed communication pattern (events up, attributes down) with a consistent two-way event bus
 
 ## Current State
@@ -27,17 +27,17 @@ The host acts as a mediator: it listens to `mf:navigate` events from navigation,
 
 ## Changes
 
-### 1. Merge Layout + Navigation into `mfe-shell`
+### 1. Merge Layout + Navigation into `mfe-layout`
 
-Combine into `src/apps/mfe-shell/`:
+Combine into `src/apps/mfe-layout/`:
 - Shell renders the sidebar navigation and the slot-based content area
-- One shadow DOM component, one custom element `<mfe-shell>`
+- One shadow DOM component, one custom element `<mfe-layout>`
 - Eliminates the `navigation` slot — only `content` slot remains
 - Layout CSS and navigation CSS merge into one
 
 Host simplifies to:
 ```jsx
-<MfElement mf={mfs.shell}>
+<MfElement mf={mfs.layout}>
   <Routes>
     <Route path="/" element={<Navigate to="/dashboard" replace />} />
     {routeMfs.map((r) => (
@@ -47,7 +47,7 @@ Host simplifies to:
 </MfElement>
 ```
 
-Remove from config: `layout` and `navigation` entries. Add: `shell`.
+Remove from config: `layout` and `navigation` entries. Add: `layout`.
 
 ### 2. Two-Way Event Bus for MFE Communication
 
@@ -90,15 +90,15 @@ This is symmetric, decoupled, and extensible:
 
 ### 3. Simplify Registration
 
-With the event bus, `registerNavigationElement()` is no longer needed. All MFEs (including shell) use `registerCustomElement()`. The `MfNavigation` wrapper in the host is replaced by the generic `MfElement`.
+With the event bus, `registerNavigationElement()` is no longer needed. All MFEs (including layout) use `registerCustomElement()`. The `MfNavigation` wrapper in the host is replaced by the generic `MfElement`.
 
 ## Migration Steps
 
-1. Create `src/apps/mfe-shell/` combining layout + navigation code and styles
-2. Wire shell to emit `mfe:navigate` and listen to `mfe:route-changed` using raw `window.dispatchEvent` / `window.addEventListener`
+1. Create `src/apps/mfe-layout/` combining layout + navigation code and styles
+2. Wire layout to emit `mfe:navigate` and listen to `mfe:route-changed` using raw `window.dispatchEvent` / `window.addEventListener`
 3. Update host to dispatch `mfe:route-changed` on route changes (single `useEffect` in App)
 4. Update host to listen to `mfe:navigate` on window (single `useEffect` in App)
-6. Remove `MfNavigation` component from host — shell uses generic `MfElement`
+6. Remove `MfNavigation` component from host — layout uses generic `MfElement`
 7. Remove `registerNavigationElement()` from utils
 8. Delete `src/apps/mfe-layout/` and `src/apps/mfe-navigation/`
 9. Update config, env vars, Dockerfiles, and GitHub Actions

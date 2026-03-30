@@ -3,7 +3,7 @@ name: Aggregate datasets
 on:
   push:
     paths:
-      - "events/**"
+      - "deploys/**"
 
 permissions:
   contents: write
@@ -42,12 +42,12 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf site
-          mkdir -p site/datasets
+          mkdir -p site/state
           cp index.html site/index.html
           cp index.js site/index.js
           cp index.css site/index.css
-          cp datasets/events.json site/datasets/events.json
-          cp datasets/deps.json site/datasets/deps.json
+          cp state/deploys.json site/state/deploys.json
+          cp state/graph.json site/state/graph.json
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
@@ -61,13 +61,13 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add datasets/events.json datasets/deps.json || true
+          git add state/deploys.json state/graph.json || true
 
           if git diff --cached --quiet; then
             exit 0
           fi
 
-          git commit -m "chore: update datasets [skip agg]"
+          git commit -m "chore: update state [skip agg]"
 
           for i in 1 2 3 4 5; do
             if git push; then

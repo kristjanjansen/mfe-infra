@@ -1,0 +1,181 @@
+name: Live Deploy
+
+on:
+  pull_request:
+    paths: [live.env]
+  push:
+    branches: [main]
+    paths: [live.env]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate live.env
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS='=' read -r key version; do
+            [[ -z "$key" || "$key" =~ ^# ]] && continue
+            key=$(echo "$key" | xargs)
+            version=$(echo "$version" | xargs)
+            [[ -z "$version" ]] && continue
+            if [[ "$version" == pr-* ]]; then
+              echo "ERROR: $key=$version — PR versions not allowed in live.env" >&2
+              exit 1
+            fi
+            if [[ "$version" == latest-* ]]; then
+              echo "ERROR: $key=$version — latest-* not allowed in live.env" >&2
+              exit 1
+            fi
+            if [[ ! "$version" =~ ^rel- ]]; then
+              echo "ERROR: $key=$version — only rel-* versions allowed in live.env" >&2
+              exit 1
+            fi
+            echo "OK: $key=$version"
+          done < live.env
+          echo "All versions valid."
+
+  deploy-rc:
+    if: github.event_name == 'pull_request'
+    needs: validate
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load provider config
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROVIDER="${PROVIDER:-local}"
+          source "k8s/providers/${PROVIDER}/config.env"
+          echo "DOMAIN=${DOMAIN}" >> "$GITHUB_ENV"
+          echo "PROTOCOL=${PROTOCOL}" >> "$GITHUB_ENV"
+
+      - name: Deploy to RC (all countries)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for config_file in config/*.json; do
+            country=$(basename "$config_file" .json)
+            NAMESPACE="rc-${country}"
+            HOST="rc-${country}.${DOMAIN}"
+
+            echo "Deploying RC for ${country} -> ${PROTOCOL}://${HOST}"
+
+            # Create namespace
+            kubectl get ns "$NAMESPACE" >/dev/null 2>&1 || kubectl create ns "$NAMESPACE"
+
+            # Update ConfigMap
+            kubectl create configmap country-config \
+              --from-file=config.json="$config_file" \
+              -n "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+
+            # Deploy each service from live.env
+            while IFS='=' read -r key version; do
+              [[ -z "$key" || "$key" =~ ^# ]] && continue
+              key=$(echo "$key" | xargs)
+              version=$(echo "$version" | xargs)
+              [[ -z "$version" ]] && continue
+
+              service_name=$(echo "$key" | tr '[:upper:]' '[:lower:]' | tr '_' '-')
+              safe_version=$(echo "$version" | tr '.' '-')
+              IMAGE="${service_name}:${safe_version}"
+
+              export SERVICE_NAME="$service_name"
+              export HOST="$HOST"
+              export PORT="4000"
+              export IMAGE="$IMAGE"
+
+              envsubst < k8s/base-deployment.yaml | kubectl apply -n "$NAMESPACE" -f -
+              envsubst < k8s/base-service.yaml | kubectl apply -n "$NAMESPACE" -f -
+            done < live.env
+
+            # Apply ingress
+            export SERVICE_NAME="mfe-host-web"
+            export HOST="$HOST"
+            kubectl delete ingress "$SERVICE_NAME" -n "$NAMESPACE" --ignore-not-found=true
+            envsubst < k8s/base-ingress.yaml | kubectl apply -n "$NAMESPACE" -f -
+          done
+
+  deploy-live:
+    if: github.event_name == 'push'
+    needs: validate
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load provider config
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROVIDER="${PROVIDER:-local}"
+          source "k8s/providers/${PROVIDER}/config.env"
+          echo "DOMAIN=${DOMAIN}" >> "$GITHUB_ENV"
+          echo "PROTOCOL=${PROTOCOL}" >> "$GITHUB_ENV"
+
+      - name: Deploy to live (all countries)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for config_file in config/*.json; do
+            country=$(basename "$config_file" .json)
+            NAMESPACE="live-${country}"
+            HOST="${country}.app.${DOMAIN}"
+
+            echo "Deploying live for ${country} -> ${PROTOCOL}://${HOST}"
+
+            kubectl get ns "$NAMESPACE" >/dev/null 2>&1 || kubectl create ns "$NAMESPACE"
+
+            kubectl create configmap country-config \
+              --from-file=config.json="$config_file" \
+              -n "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+
+            while IFS='=' read -r key version; do
+              [[ -z "$key" || "$key" =~ ^# ]] && continue
+              key=$(echo "$key" | xargs)
+              version=$(echo "$version" | xargs)
+              [[ -z "$version" ]] && continue
+
+              service_name=$(echo "$key" | tr '[:upper:]' '[:lower:]' | tr '_' '-')
+              safe_version=$(echo "$version" | tr '.' '-')
+              IMAGE="${service_name}:${safe_version}"
+
+              export SERVICE_NAME="$service_name"
+              export HOST="$HOST"
+              export PORT="4000"
+              export IMAGE="$IMAGE"
+
+              envsubst < k8s/base-deployment.yaml | kubectl apply -n "$NAMESPACE" -f -
+              envsubst < k8s/base-service.yaml | kubectl apply -n "$NAMESPACE" -f -
+            done < live.env
+
+            export SERVICE_NAME="mfe-host-web"
+            export HOST="$HOST"
+            kubectl delete ingress "$SERVICE_NAME" -n "$NAMESPACE" --ignore-not-found=true
+            envsubst < k8s/base-ingress.yaml | kubectl apply -n "$NAMESPACE" -f -
+          done
+
+      - name: Smoke test
+        id: smoke
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          for config_file in config/*.json; do
+            country=$(basename "$config_file" .json)
+            HOST="${country}.app.${DOMAIN}"
+            URL="${PROTOCOL}://${HOST}"
+            echo "Smoke testing ${URL}..."
+            curl --fail --max-time 10 "$URL" || exit 1
+          done
+
+      - name: Auto-rollback on failure
+        if: steps.smoke.outcome == 'failure'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git revert HEAD --no-edit
+          git push

@@ -2,8 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 const repoRoot = process.cwd();
-const eventsRoot = path.join(repoRoot, "events");
-const datasetsDir = path.join(repoRoot, "datasets");
+const deploysRoot = path.join(repoRoot, "deploys");
+const stateDir = path.join(repoRoot, "state");
 
 function walk(dir) {
   const out = [];
@@ -18,11 +18,10 @@ function walk(dir) {
 }
 
 function readJson(p) {
-  const raw = fs.readFileSync(p, "utf8");
-  return JSON.parse(raw);
+  return JSON.parse(fs.readFileSync(p, "utf8"));
 }
 
-const eventFiles = walk(eventsRoot);
+const eventFiles = walk(deploysRoot);
 const events = [];
 for (const f of eventFiles) {
   try {
@@ -37,163 +36,76 @@ events.sort((a, b) =>
   String(a.timestamp || "").localeCompare(String(b.timestamp || ""))
 );
 
-fs.mkdirSync(datasetsDir, { recursive: true });
+fs.mkdirSync(stateDir, { recursive: true });
 
 const generatedAt = new Date().toISOString();
 
-const eventsJson = {
-  generated_at: generatedAt,
-  events,
-};
-
+// Write deploys.json (flat event list)
 fs.writeFileSync(
-  path.join(datasetsDir, "events.json"),
-  JSON.stringify(eventsJson, null, 2) + "\n"
+  path.join(stateDir, "deploys.json"),
+  JSON.stringify({ generated_at: generatedAt, events }, null, 2) + "\n"
 );
 
-const apps = new Map();
-const latestServiceByName = new Map();
-const referencedByOtherApps = new Set();
+// Build DAG: unique nodes + edges
+const nodes = new Map();
+const edgeSet = new Set();
 
-for (const e of events) {
-  if (!e || typeof e !== "object") continue;
-  if (!e.app_name) continue;
+function upsertNode(name, data) {
+  const ts = String(data.timestamp || "");
+  const existing = nodes.get(name);
 
-  const appName = String(e.app_name);
-  const ts = String(e.timestamp || "");
-
-  // Track latest deploy per app
-  if (!apps.has(appName)) {
-    apps.set(appName, {
-      id: appName,
-      label: appName,
-      environment: e.environment || "",
-      deploy_url: e.deploy_url || "",
-      last_timestamp: e.timestamp || "",
-      status: e.status || "",
-      services: [],
+  if (!existing || ts >= String(existing.last_deployed || "")) {
+    nodes.set(name, {
+      service: name,
+      version: data.environment
+        ? `${data.environment}-${extractVersion(data.deploy_url, name)}`
+        : "",
+      url: data.deploy_url || "",
+      status: data.status || existing?.status || "",
+      last_deployed: data.timestamp || existing?.last_deployed || "",
     });
   }
+}
 
-  const cur = apps.get(appName);
-  if (ts && ts >= String(cur.last_timestamp || "")) {
-    cur.environment = e.environment || cur.environment;
-    cur.deploy_url = e.deploy_url || cur.deploy_url;
-    cur.last_timestamp = e.timestamp || cur.last_timestamp;
-    cur.status = e.status || cur.status;
-    cur.services = Array.isArray(e.services) ? e.services : [];
+function extractVersion(deployUrl, serviceName) {
+  try {
+    const host = new URL(deployUrl).hostname;
+    const label = host.split(".")[0];
+    const prefix = serviceName + "-";
+    if (label.startsWith(prefix)) {
+      return label.slice(prefix.length).replace(/^(pr-|rel-)/, "");
+    }
+  } catch {
+    // ignore
   }
+  return "";
+}
 
-  // Track latest info for each service, across all events
-  if (Array.isArray(e.services)) {
-    for (const s of e.services) {
-      if (!s || typeof s !== "object") continue;
-      if (!s.app_name) continue;
-      const name = String(s.app_name);
-      const sTs = String(s.timestamp || e.timestamp || "");
+for (const event of events) {
+  if (!event.app_name) continue;
+  upsertNode(event.app_name, event);
 
-      referencedByOtherApps.add(name);
-
-      const prev = latestServiceByName.get(name);
-      if (!prev || sTs >= String(prev.last_timestamp || "")) {
-        latestServiceByName.set(name, {
-          id: name,
-          label: name,
-          environment: s.environment || "",
-          deploy_url: s.deploy_url || "",
-          last_timestamp: s.timestamp || e.timestamp || "",
-        });
-      }
+  if (Array.isArray(event.services)) {
+    for (const svc of event.services) {
+      if (!svc.app_name) continue;
+      upsertNode(svc.app_name, svc);
+      edgeSet.add(`${event.app_name}->${svc.app_name}`);
     }
   }
 }
 
-function uniqSorted(arr) {
-  return [...new Set(arr)].sort((a, b) => a.localeCompare(b));
-}
+const edges = [...edgeSet].sort().map((e) => {
+  const [from, to] = e.split("->");
+  return { from, to };
+});
 
-function serviceNamesFromApp(app) {
-  const names = [];
-  for (const s of app.services || []) {
-    if (s && typeof s === "object" && s.app_name) {
-      names.push(String(s.app_name));
-    }
-  }
-  return uniqSorted(names);
-}
-
-function metaForName(name) {
-  const app = apps.get(name);
-  if (app) {
-    return {
-      environment: app.environment,
-      deploy_url: app.deploy_url,
-      last_timestamp: app.last_timestamp,
-      status: app.status,
-    };
-  }
-  const svc = latestServiceByName.get(name);
-  return {
-    environment: svc?.environment || "",
-    deploy_url: svc?.deploy_url || "",
-    last_timestamp: svc?.last_timestamp || "",
-  };
-}
-
-function buildNode(name, visiting) {
-  const meta = metaForName(name);
-  const node = {
-    id: name,
-    label: name,
-    meta,
-  };
-
-  if (visiting.has(name)) return node;
-
-  const app = apps.get(name);
-  if (!app) return node;
-
-  visiting.add(name);
-  const deps = serviceNamesFromApp(app);
-  if (deps.length) {
-    node.children = deps.map((dep) => buildNode(dep, visiting));
-  }
-  visiting.delete(name);
-
-  return node;
-}
-
-// Ensure any referenced service name appears as a node even if it has no standalone deploy event.
-for (const name of latestServiceByName.keys()) {
-  if (apps.has(name)) continue;
-  const meta = latestServiceByName.get(name);
-  apps.set(name, {
-    id: name,
-    label: name,
-    environment: meta?.environment || "",
-    deploy_url: meta?.deploy_url || "",
-    last_timestamp: meta?.last_timestamp || "",
-    status: "",
-    services: [],
-  });
-}
-
-const rootAppNames = uniqSorted(
-  [...apps.keys()].filter((name) => !referencedByOtherApps.has(name))
-);
-
-const children = rootAppNames.map((name) => buildNode(name, new Set()));
-
-const depsJson = {
+const graphJson = {
   generated_at: generatedAt,
-  root: {
-    id: "mf-infra",
-    label: "mf-infra",
-    children,
-  },
+  nodes: [...nodes.values()],
+  edges,
 };
 
 fs.writeFileSync(
-  path.join(datasetsDir, "deps.json"),
-  JSON.stringify(depsJson, null, 2) + "\n"
+  path.join(stateDir, "graph.json"),
+  JSON.stringify(graphJson, null, 2) + "\n"
 );

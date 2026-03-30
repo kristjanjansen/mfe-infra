@@ -163,7 +163,7 @@ Semantic names (not tied to light/dark):
 3. Add the blocking `<script>` to host's `index.html`
 4. Import `theme.css` in each MFE's `index.css`
 5. Replace hardcoded Tailwind colors (`bg-gray-100`) with semantic tokens (`bg-surface`) across all MFE components
-6. Add toggle UI to shell MFE
+6. Add toggle UI to layout MFE
 7. Add transition CSS for smooth toggle animation
 
 ## Expo Host

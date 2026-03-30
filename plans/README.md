@@ -4,7 +4,7 @@ Suggested execution order:
 
 1. [K8s Provider-Agnostic Setup](k8s-provider-agnostic.md) — rename `mf` → `mfe`, provider config layer, DigitalOcean setup
 2. [API Simplification](api-simplification.md) — replace Nitro with Hono, mock auth endpoints
-3. [Frontend Structure](frontend-structure.md) — merge layout + navigation into shell, two-way event bus
+3. [Frontend Structure](frontend-structure.md) — merge layout + navigation into single layout MFE, two-way event bus
 4. [Routing](routing.md) — app-wide + app-specific routing with `basename`
 5. [Dark Mode](dark-mode.md) — CSS custom properties through shadow DOM, no-flash toggle
 6. [Frontend Performance](frontend-performance.md) — shared dependencies, preloading, bundle optimization

@@ -7,7 +7,7 @@ Live is a specific, pinned combination of service versions deployed to a product
 ```
 # live.env
 MFE_HOST_WEB=rel-0.2.0
-MFE_SHELL=rel-0.1.3
+MFE_LAYOUT=rel-0.1.3
 MFE_BILLING=rel-0.3.1
 MFE_DASHBOARD=rel-0.2.0
 MFE_COOKIEBOT=rel-0.1.0
@@ -205,13 +205,13 @@ const BASE = process.env.BASE_URL; // rc.fachwerk.dev or app.fachwerk.dev
 
 test("app loads and mounts all MFEs", async () => {
   await page.goto(BASE);
-  await expect.element(page.locator("mfe-shell")).toBeVisible();
+  await expect.element(page.locator("mfe-layout")).toBeVisible();
   await expect.element(page.locator("mfe-dashboard")).toBeVisible();
 });
 
 test("navigation works", async () => {
   await page.goto(BASE);
-  await page.locator("mfe-shell").getByText("Billing").click();
+  await page.locator("mfe-layout").getByText("Billing").click();
   await expect.element(page.locator("mfe-billing")).toBeVisible();
 });
 

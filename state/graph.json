@@ -1,0 +1,99 @@
+{
+  "generated_at": "2026-03-30T18:58:47.913Z",
+  "nodes": [
+    {
+      "service": "mf-host-web",
+      "version": "pr-11",
+      "url": "http://mf-host-web-pr-11.localtest.me",
+      "status": "success",
+      "last_deployed": "2026-01-03T10:40:56Z"
+    },
+    {
+      "service": "mf-layout",
+      "version": "rel-0-0-4",
+      "url": "http://mf-layout-rel-0-0-4.localtest.me",
+      "status": "",
+      "last_deployed": "2026-01-03T10:40:56Z"
+    },
+    {
+      "service": "mf-navigation",
+      "version": "rel-0-0-4",
+      "url": "http://mf-navigation-rel-0-0-4.localtest.me",
+      "status": "",
+      "last_deployed": "2026-01-03T10:40:56Z"
+    },
+    {
+      "service": "mf-billing",
+      "version": "pr-3",
+      "url": "http://mf-billing-pr-3.localtest.me",
+      "status": "success",
+      "last_deployed": "2026-01-03T10:40:56Z"
+    },
+    {
+      "service": "mf-dashboard",
+      "version": "pr-3",
+      "url": "http://mf-dashboard-pr-3.localtest.me",
+      "status": "success",
+      "last_deployed": "2026-01-03T10:47:22Z"
+    },
+    {
+      "service": "mf-cookiebot",
+      "version": "pr-3",
+      "url": "http://mf-cookiebot-pr-3.localtest.me",
+      "status": "",
+      "last_deployed": "2026-01-03T10:40:56Z"
+    },
+    {
+      "service": "mf-translations",
+      "version": "pr-2",
+      "url": "http://mf-translations-pr-2.localtest.me",
+      "status": "success",
+      "last_deployed": "2026-01-03T10:47:22Z"
+    },
+    {
+      "service": "mf-api",
+      "version": "rel-0-0-1",
+      "url": "http://mf-api-rel-0-0-1.localtest.me",
+      "status": "",
+      "last_deployed": "2026-01-03T10:47:22Z"
+    }
+  ],
+  "edges": [
+    {
+      "from": "mf-billing",
+      "to": "mf-api"
+    },
+    {
+      "from": "mf-billing",
+      "to": "mf-translations"
+    },
+    {
+      "from": "mf-dashboard",
+      "to": "mf-api"
+    },
+    {
+      "from": "mf-dashboard",
+      "to": "mf-translations"
+    },
+    {
+      "from": "mf-host-web",
+      "to": "mf-billing"
+    },
+    {
+      "from": "mf-host-web",
+      "to": "mf-cookiebot"
+    },
+    {
+      "from": "mf-host-web",
+      "to": "mf-dashboard"
+    },
+    {
+      "from": "mf-host-web",
+      "to": "mf-layout"
+    },
+    {
+      "from": "mf-host-web",
+      "to": "mf-navigation"
+    }
+  ]
+}

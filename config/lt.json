@@ -1,0 +1,10 @@
+{
+  "environment": "live",
+  "country": "LT",
+  "defaultLanguage": "lt",
+  "languages": ["lt", "en", "ru"],
+  "features": {
+    "orders": false,
+    "darkMode": true
+  }
+}

@@ -1,5 +1,5 @@
 name: "Record Deploy Event"
-description: "Writes a deploy event into mf-infra/events and pushes it to the mf-infra repo"
+description: "Writes a deploy event into mf-infra/deploys and pushes it to the mf-infra repo"
 
 inputs:
   token:

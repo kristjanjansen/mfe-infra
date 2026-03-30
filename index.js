@@ -28,31 +28,62 @@ function clear() {
 
 function formatUpdated(ts) {
   try {
-    const zdt = Temporal.Instant.from(ts).toZonedDateTimeISO(
-      Temporal.Now.timeZoneId()
-    );
-    const dd = String(zdt.day).padStart(2, "0");
-    const mm = String(zdt.month).padStart(2, "0");
-    const yyyy = String(zdt.year);
-    const hh = String(zdt.hour).padStart(2, "0");
-    const min = String(zdt.minute).padStart(2, "0");
-    const ss = String(zdt.second).padStart(2, "0");
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return "";
+    const dd = String(d.getDate()).padStart(2, "0");
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const yyyy = String(d.getFullYear());
+    const hh = String(d.getHours()).padStart(2, "0");
+    const min = String(d.getMinutes()).padStart(2, "0");
+    const ss = String(d.getSeconds()).padStart(2, "0");
     return `Last updated ${dd}.${mm}.${yyyy} ${hh}:${min}:${ss}`;
   } catch {
-    try {
-      const d = new Date(ts);
-      if (Number.isNaN(d.getTime())) return "";
-      const dd = String(d.getDate()).padStart(2, "0");
-      const mm = String(d.getMonth() + 1).padStart(2, "0");
-      const yyyy = String(d.getFullYear());
-      const hh = String(d.getHours()).padStart(2, "0");
-      const min = String(d.getMinutes()).padStart(2, "0");
-      const ss = String(d.getSeconds()).padStart(2, "0");
-      return `Last updated ${dd}.${mm}.${yyyy} ${hh}:${min}:${ss}`;
-    } catch {
-      return "";
-    }
+    return "";
   }
+}
+
+function buildTreeFromDag(nodes, edges) {
+  const nodeMap = new Map(nodes.map((n) => [n.service, n]));
+  const children = new Map();
+  const hasParent = new Set();
+
+  for (const { from, to } of edges) {
+    if (!children.has(from)) children.set(from, []);
+    children.get(from).push(to);
+    hasParent.add(to);
+  }
+
+  // Root nodes = no incoming edges
+  const roots = nodes.filter((n) => !hasParent.has(n.service));
+
+  function buildNode(name, visited) {
+    const data = nodeMap.get(name) || { service: name };
+    const node = { ...data };
+    if (visited.has(name)) return node;
+    visited.add(name);
+    const deps = children.get(name);
+    if (deps && deps.length) {
+      node.children = deps.map((d) => buildNode(d, visited));
+    }
+    visited.delete(name);
+    return node;
+  }
+
+  if (roots.length === 1) {
+    return buildNode(roots[0].service, new Set());
+  }
+
+  return {
+    service: "root",
+    children: roots.map((r) => buildNode(r.service, new Set())),
+  };
+}
+
+function envFromVersion(version) {
+  if (!version) return "";
+  if (version.startsWith("pr-") || version.startsWith("pr")) return "pr";
+  if (version.startsWith("rel-") || version.startsWith("rel")) return "rel";
+  return "";
 }
 
 function render(treeData) {
@@ -68,8 +99,7 @@ function render(treeData) {
   const links = root.links();
 
   const isHiddenRoot = (n) =>
-    n.depth === 0 &&
-    (n.data?.id === "mf-infra" || n.data?.label === "mf-infra");
+    n.depth === 0 && n.data?.service === "root";
 
   const visibleNodes = nodes.filter((n) => !isHiddenRoot(n));
 
@@ -92,41 +122,41 @@ function render(treeData) {
   const shiftX = margin - y0;
   const shiftY = margin - x0;
 
-  const linkPath = d3
-    .linkHorizontal()
-    .x((d) => d.y)
-    .y((d) => d.x);
-
   const nodeBoxes = new Map();
 
   for (const n of nodes) {
-    if (isHiddenRoot(n)) {
-      continue;
-    }
+    if (isHiddenRoot(n)) continue;
 
     const div = document.createElement("div");
     div.className = "node";
 
-    const label = n.data.label || n.data.id;
+    const label = n.data.service || "unknown";
     const name = document.createElement("div");
     name.className = "name";
     name.textContent = label;
 
-    if (n.data?.meta?.environment) {
+    const env = envFromVersion(n.data.version || "");
+    if (env) {
       const b = document.createElement("span");
-      const env = String(n.data.meta.environment || "").toLowerCase();
-      b.className = `badge badge-${env || "unknown"}`;
-      b.textContent = n.data.meta.environment;
+      b.className = `badge badge-${env}`;
+      b.textContent = env;
       name.appendChild(b);
+    }
+
+    if (n.data.version) {
+      const v = document.createElement("span");
+      v.className = "version";
+      v.textContent = n.data.version;
+      name.appendChild(v);
     }
 
     div.appendChild(name);
 
-    if (n.data?.meta?.deploy_url) {
+    if (n.data.url) {
       const line = document.createElement("a");
       line.className = "line";
-      line.textContent = n.data.meta.deploy_url;
-      line.href = n.data.meta.deploy_url;
+      line.textContent = n.data.url;
+      line.href = n.data.url;
       line.target = "_blank";
       line.rel = "noreferrer";
       div.appendChild(line);
@@ -140,37 +170,19 @@ function render(treeData) {
 
     nodesLayer.appendChild(div);
 
-    nodeBoxes.set(n, {
-      div,
-      cx: left,
-      cy: top,
-      w: 0,
-      h: 0,
-    });
+    nodeBoxes.set(n, { div, cx: left, cy: top, w: 0, h: 0 });
   }
 
-  // Measure after insertion so links attach to box edges.
   for (const box of nodeBoxes.values()) {
     box.w = box.div.offsetWidth || 0;
     box.h = box.div.offsetHeight || 0;
-  }
-
-  let minX = Infinity;
-  let maxX = -Infinity;
-  let minY = Infinity;
-  let maxY = -Infinity;
-  for (const b of nodeBoxes.values()) {
-    minX = Math.min(minX, b.cx);
-    maxX = Math.max(maxX, b.cx + b.w);
-    minY = Math.min(minY, b.cy - b.h / 2);
-    maxY = Math.max(maxY, b.cy + b.h / 2);
   }
 
   const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
   svg.appendChild(g);
 
   for (const l of links) {
-    if (l.source.depth === 0) continue;
+    if (isHiddenRoot(l.source)) continue;
 
     const s = nodeBoxes.get(l.source);
     const t = nodeBoxes.get(l.target);
@@ -198,17 +210,19 @@ function render(treeData) {
   const stageW = stageRect.width || 0;
   const stageH = stageRect.height || 0;
 
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const b of nodeBoxes.values()) {
+    minX = Math.min(minX, b.cx);
+    maxX = Math.max(maxX, b.cx + b.w);
+    minY = Math.min(minY, b.cy - b.h / 2);
+    maxY = Math.max(maxY, b.cy + b.h / 2);
+  }
+
   const bboxW = Number.isFinite(minX) ? maxX - minX : width;
   const bboxH = Number.isFinite(minY) ? maxY - minY : height;
   const pad = 20;
-  const tx = Math.max(
-    pad,
-    (stageW - bboxW) / 2 - (Number.isFinite(minX) ? minX : 0)
-  );
-  const ty = Math.max(
-    pad,
-    (stageH - bboxH) / 2 - (Number.isFinite(minY) ? minY : 0)
-  );
+  const tx = Math.max(pad, (stageW - bboxW) / 2 - (Number.isFinite(minX) ? minX : 0));
+  const ty = Math.max(pad, (stageH - bboxH) / 2 - (Number.isFinite(minY) ? minY : 0));
 
   const initial = d3.zoomIdentity.translate(tx, ty).scale(1);
   if (state.zoom) {
@@ -221,7 +235,7 @@ function render(treeData) {
 }
 
 async function main() {
-  const res = await fetch("./datasets/deps.json", { cache: "no-store" });
+  const res = await fetch("./state/graph.json", { cache: "no-store" });
   const data = await res.json();
 
   if (data.generated_at) {
@@ -236,7 +250,15 @@ async function main() {
   state.zoom = zoom;
   d3.select(stage).call(zoom);
 
-  render(data.root);
+  // New DAG format: nodes + edges
+  if (data.nodes && data.edges) {
+    const treeData = buildTreeFromDag(data.nodes, data.edges);
+    render(treeData);
+  }
+  // Legacy tree format
+  else if (data.root) {
+    render(data.root);
+  }
 }
 
 main().catch((e) => {

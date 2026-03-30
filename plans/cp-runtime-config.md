@@ -127,6 +127,12 @@ Clear overrides = reset to default config for that country.
 
 In K8s live, only the relevant country file is mounted. The switcher MFE is not loaded (environment is `"live"`).
 
+### TODO: Revisit Later
+
+- Country switching via localStorage + devtools MFE (currently hardcoded to ee.json)
+- Feature flag overrides via localStorage
+- Config switcher MFE (`mfe-devtools`)
+
 ### What to Skip
 
 - Config as an API endpoint (not needed — static files work)

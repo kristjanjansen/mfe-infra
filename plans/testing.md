@@ -209,7 +209,7 @@ import { page } from "@vitest/browser/context";
 test("preview loads and mounts MFEs", async () => {
   await page.goto(process.env.BASE_URL!);
   await expect.element(page.getByRole("navigation")).toBeVisible();
-  await expect.element(page.locator("mfe-shell")).toBeVisible();
+  await expect.element(page.locator("mfe-layout")).toBeVisible();
   await expect.element(page.locator("mfe-dashboard")).toBeVisible();
 });
 ```
