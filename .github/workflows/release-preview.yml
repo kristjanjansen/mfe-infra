@@ -68,6 +68,22 @@ jobs:
             echo "infra_token_present=false"
           fi
 
+      - name: Checkout mf-infra (for provider config)
+        uses: actions/checkout@v4
+        with:
+          repository: kristjanjansen/mf-infra
+          path: mf-infra
+          token: ${{ github.token }}
+
+      - name: Load provider config
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROVIDER="${PROVIDER:-local}"
+          source "mf-infra/k8s/providers/${PROVIDER}/config.env"
+          echo "DOMAIN=${DOMAIN}" >> "$GITHUB_ENV"
+          echo "PROTOCOL=${PROTOCOL}" >> "$GITHUB_ENV"
+
       - name: Compute release preview identifiers
         id: compute
         shell: bash
@@ -90,8 +106,8 @@ jobs:
           SUFFIX="rel-${SAFE_VERSION}"
 
           NAMESPACE="${SERVICE_NAME}-${SUFFIX}"
-          HOST="${SERVICE_NAME}-${SUFFIX}.localtest.me"
-          URL="http://${HOST}"
+          HOST="${SERVICE_NAME}-${SUFFIX}.${DOMAIN}"
+          URL="${PROTOCOL}://${HOST}"
           IMAGE="${SERVICE_NAME}:${SUFFIX}"
           TAG_VERSION="v${VERSION_NO_V}"
 
@@ -136,5 +152,5 @@ jobs:
         shell: bash
         run: |
           {
-            echo "http://$HOST"
+            echo "${PROTOCOL}://${HOST}"
           } >> "$GITHUB_STEP_SUMMARY"

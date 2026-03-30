@@ -39,6 +39,22 @@ jobs:
             echo "infra_token_present=false"
           fi
 
+      - name: Checkout mf-infra (for provider config)
+        uses: actions/checkout@v4
+        with:
+          repository: kristjanjansen/mf-infra
+          path: mf-infra
+          token: ${{ github.token }}
+
+      - name: Load provider config
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROVIDER="${PROVIDER:-local}"
+          source "mf-infra/k8s/providers/${PROVIDER}/config.env"
+          echo "DOMAIN=${DOMAIN}" >> "$GITHUB_ENV"
+          echo "PROTOCOL=${PROTOCOL}" >> "$GITHUB_ENV"
+
       - name: Compute preview identifiers
         shell: bash
         run: |
@@ -66,8 +82,8 @@ jobs:
 
           echo "NAMESPACE=${SERVICE_NAME}-${SUFFIX}" >> "$GITHUB_ENV"
           echo "IMAGE=${SERVICE_NAME}:${SUFFIX}" >> "$GITHUB_ENV"
-          echo "HOST=${SERVICE_NAME}-${SUFFIX}.localtest.me" >> "$GITHUB_ENV"
-          echo "DEPLOY_URL=http://${SERVICE_NAME}-${SUFFIX}.localtest.me" >> "$GITHUB_ENV"
+          echo "HOST=${SERVICE_NAME}-${SUFFIX}.${DOMAIN}" >> "$GITHUB_ENV"
+          echo "DEPLOY_URL=${PROTOCOL}://${SERVICE_NAME}-${SUFFIX}.${DOMAIN}" >> "$GITHUB_ENV"
           echo "EVENT_ENVIRONMENT=${EVENT_ENVIRONMENT}" >> "$GITHUB_ENV"
 
       - name: Build Docker image
@@ -90,7 +106,7 @@ jobs:
         with:
           header: Preview - ${{ env.SERVICE_NAME }}
           message: |
-            🚀 Preview ready: http://${{ env.HOST }}
+            🚀 Preview ready: ${{ env.DEPLOY_URL }}
 
       - name: Record deploy event
         if: ${{ env.INFRA_TOKEN != '' }}
