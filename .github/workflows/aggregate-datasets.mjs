@@ -57,9 +57,7 @@ function upsertNode(name, data) {
   if (!existing || ts >= String(existing.last_deployed || "")) {
     nodes.set(name, {
       service: name,
-      version: data.environment
-        ? `${data.environment}-${extractVersion(data.deploy_url, name)}`
-        : "",
+      version: extractVersion(data.deploy_url, name) || "",
       url: data.deploy_url || "",
       status: data.status || existing?.status || "",
       last_deployed: data.timestamp || existing?.last_deployed || "",

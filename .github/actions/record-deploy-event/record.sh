@@ -41,8 +41,11 @@ export STATUS
 export SHA
 export REF
 # Load provider config for URL resolution in record.mjs
-PROVIDER="${PROVIDER:-local}"
-PROVIDER_CONFIG="${ROOT_DIR}/k8s/providers/${PROVIDER}/config.env"
+# Try digitalocean first, fall back to local
+PROVIDER_CONFIG="${ROOT_DIR}/k8s/providers/digitalocean/config.env"
+if [ ! -f "$PROVIDER_CONFIG" ]; then
+  PROVIDER_CONFIG="${ROOT_DIR}/k8s/providers/local/config.env"
+fi
 if [ -f "$PROVIDER_CONFIG" ]; then
   source "$PROVIDER_CONFIG"
 fi

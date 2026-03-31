@@ -135,18 +135,10 @@ function render(treeData) {
     name.className = "name";
     name.textContent = label;
 
-    const env = envFromVersion(n.data.version || "");
-    if (env) {
-      const b = document.createElement("span");
-      b.className = `badge badge-${env}`;
-      b.textContent = env;
-      name.appendChild(b);
-    }
-
     if (n.data.version) {
       const v = document.createElement("span");
       v.className = "version";
-      v.textContent = n.data.version;
+      v.textContent = ` ${n.data.version}`;
       name.appendChild(v);
     }
 
