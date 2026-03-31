@@ -1,6 +1,7 @@
 name: Aggregate datasets
 
 on:
+  workflow_dispatch:
   push:
     paths:
       - "deploys/**"
