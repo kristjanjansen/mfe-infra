@@ -79,10 +79,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          PROVIDER="${PROVIDER:-local}"
+          PROVIDER="${PROVIDER:-${{ vars.PROVIDER || 'local' }}}"
           source "mf-infra/k8s/providers/${PROVIDER}/config.env"
           echo "DOMAIN=${DOMAIN}" >> "$GITHUB_ENV"
           echo "PROTOCOL=${PROTOCOL}" >> "$GITHUB_ENV"
+          echo "REGISTRY=${REGISTRY}" >> "$GITHUB_ENV"
 
       - name: Compute release preview identifiers
         id: compute
@@ -108,7 +109,11 @@ jobs:
           NAMESPACE="${SERVICE_NAME}-${SUFFIX}"
           HOST="${SERVICE_NAME}-${SUFFIX}.${DOMAIN}"
           URL="${PROTOCOL}://${HOST}"
-          IMAGE="${SERVICE_NAME}:${SUFFIX}"
+          if [ -n "${REGISTRY}" ]; then
+            IMAGE="${REGISTRY}/${SERVICE_NAME}:${SUFFIX}"
+          else
+            IMAGE="${SERVICE_NAME}:${SUFFIX}"
+          fi
           TAG_VERSION="v${VERSION_NO_V}"
 
           echo "NAMESPACE=${NAMESPACE}" >> "$GITHUB_ENV"
@@ -123,11 +128,18 @@ jobs:
           echo "host=${HOST}" >> "$GITHUB_OUTPUT"
           echo "url=${URL}" >> "$GITHUB_OUTPUT"
 
-      - name: Build Docker image
+      - name: Log in to container registry
+        if: ${{ env.REGISTRY != '' }}
+        run: echo "${{ github.token }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Build and push Docker image
         run: |
           docker build \
             --build-arg SERVICE_NAME="$SERVICE_NAME" \
             -t "$IMAGE" .
+          if [ -n "${REGISTRY}" ]; then
+            docker push "$IMAGE"
+          fi
 
       - name: Deploy release preview via infra action
         uses: kristjanjansen/mf-infra/.github/actions/deploy-preview@main
