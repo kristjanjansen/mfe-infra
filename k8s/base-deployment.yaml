@@ -15,5 +15,6 @@ spec:
       containers:
         - name: ${SERVICE_NAME}
           image: ${IMAGE}
+          imagePullPolicy: Always
           ports:
             - containerPort: ${PORT}
