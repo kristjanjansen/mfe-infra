@@ -94,6 +94,31 @@ jobs:
           echo "DEPLOY_URL=${PROTOCOL}://${SUFFIX}--${SERVICE_NAME}.${MFE_DOMAIN}" >> "$GITHUB_ENV"
           echo "EVENT_ENVIRONMENT=${EVENT_ENVIRONMENT}" >> "$GITHUB_ENV"
 
+      - name: Resolve .env.services into .env
+        shell: bash
+        run: |
+          if [ -f .env.services ]; then
+            echo "Resolving .env.services for build..."
+            while IFS= read -r line || [ -n "$line" ]; do
+              line=$(echo "$line" | xargs)
+              [[ -z "$line" || "$line" =~ ^# ]] && continue
+              KEY="${line%%=*}"
+              VALUE="${line#*=}"
+              KEY=$(echo "$KEY" | xargs)
+              VALUE=$(echo "$VALUE" | xargs)
+              [[ -z "$KEY" || -z "$VALUE" ]] && continue
+              if [[ "$VALUE" =~ ^https?:// ]]; then
+                echo "${KEY}=${VALUE}" >> .env
+              else
+                SVC=$(echo "$KEY" | tr '[:upper:]' '[:lower:]' | tr '_' '-')
+                SLUG=$(echo "$VALUE" | tr '.' '-')
+                URL="${PROTOCOL}://${SLUG}--${SVC}.${MFE_DOMAIN}"
+                echo "${KEY}_URL=${URL}" >> .env
+                echo "  ${KEY}=${VALUE} -> ${KEY}_URL=${URL}"
+              fi
+            done < .env.services
+          fi
+
       - name: Log in to container registry
         if: ${{ env.REGISTRY != '' }}
         run: echo "${{ github.token }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
