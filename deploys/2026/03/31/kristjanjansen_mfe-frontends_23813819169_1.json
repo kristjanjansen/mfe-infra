@@ -1,18 +1,18 @@
 {
-  "timestamp": "2026-03-31T18:44:53Z",
-  "app_name": "mfe-layout",
+  "timestamp": "2026-03-31T18:45:59Z",
+  "app_name": "mfe-billing",
   "environment": "rel",
-  "deploy_url": "https://rel-0-0-11--mfe-layout.mfe.fachwerk.dev",
+  "deploy_url": "https://rel-0-0-11--mfe-billing.mfe.fachwerk.dev",
   "status": "success",
   "services": [
     {
-      "timestamp": "2026-03-31T18:44:53Z",
+      "timestamp": "2026-03-31T18:45:59Z",
       "app_name": "mfe-translations",
       "environment": "rel",
       "deploy_url": "https://rel-0-0-7--mfe-translations.mfe.fachwerk.dev"
     },
     {
-      "timestamp": "2026-03-31T18:44:53Z",
+      "timestamp": "2026-03-31T18:45:59Z",
       "app_name": "mfe-api",
       "environment": "rel",
       "deploy_url": "https://rel-0-0-7--mfe-api.mfe.fachwerk.dev"
