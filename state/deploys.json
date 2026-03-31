@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-03-31T08:35:35.923Z",
+  "generated_at": "2026-03-31T13:47:45.697Z",
   "events": [
     {
       "timestamp": "2026-03-31T08:28:00Z",
@@ -8,6 +8,45 @@
       "deploy_url": "https://mfe-api-test.mfe.fachwerk.dev",
       "status": "success",
       "services": []
+    },
+    {
+      "timestamp": "2026-03-31T13:47:25Z",
+      "app_name": "mfe-host-web",
+      "environment": "rel",
+      "deploy_url": "https://rel-0-0-4--mfe-host-web.mfe.fachwerk.dev",
+      "status": "success",
+      "services": [
+        {
+          "timestamp": "2026-03-31T13:47:25Z",
+          "app_name": "mfe-layout",
+          "environment": "rel",
+          "deploy_url": "http://rel-0.0.3"
+        },
+        {
+          "timestamp": "2026-03-31T13:47:25Z",
+          "app_name": "mfe-billing",
+          "environment": "rel",
+          "deploy_url": "http://rel-0.0.3"
+        },
+        {
+          "timestamp": "2026-03-31T13:47:25Z",
+          "app_name": "mfe-dashboard",
+          "environment": "rel",
+          "deploy_url": "http://rel-0.0.3"
+        },
+        {
+          "timestamp": "2026-03-31T13:47:25Z",
+          "app_name": "mfe-cookiebot",
+          "environment": "rel",
+          "deploy_url": "http://rel-0.0.3"
+        },
+        {
+          "timestamp": "2026-03-31T13:47:25Z",
+          "app_name": "mfe-api",
+          "environment": "rel",
+          "deploy_url": "http://rel-0.0.3"
+        }
+      ]
     }
   ]
 }
