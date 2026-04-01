@@ -1,10 +1,10 @@
-# Plan: Argo Stack + Traefik Migration
+# Plan: Argo Stack + Traefik + Nexus Migration
 
 ## Current State
 
-GitHub Actions does everything: build → push ghcr.io → kubectl apply → record deploy event. Custom deploy.sh, nginx ingress, cert-manager, custom DAG dashboard.
+GitHub Actions does everything: build → push ghcr.io → kubectl apply → record deploy event. Custom deploy.sh, nginx ingress, cert-manager, custom DAG dashboard. ghcr.io has auth issues (403 on push for some repos, needs Classic PAT with write:packages).
 
-## Argo Ecosystem
+## Stack
 
 | Component | What it does | Replaces |
 |---|---|---|
@@ -12,6 +12,8 @@ GitHub Actions does everything: build → push ghcr.io → kubectl apply → rec
 | **Argo Rollouts** | Canary/blue-green deploys with automatic rollback | raw K8s Deployments, manual rollback |
 | **Argo Workflows** | DAG-based CI pipelines running on K8s | GitHub Actions build/push steps |
 | **Argo Events** | Event triggers (GitHub webhook → Argo Workflow) | GitHub Actions webhook triggers |
+| **Traefik** | Ingress controller with built-in TLS | nginx ingress, cert-manager |
+| **Nexus** | In-cluster container registry | ghcr.io, ghcr-pull secret, OCI labels, PAT auth |
 
 ## What to Adopt
 
@@ -33,18 +35,34 @@ GitHub Actions does everything: build → push ghcr.io → kubectl apply → rec
 - Traefik dashboard for debugging routing
 - Wildcard cert: single `Certificate` resource, Traefik auto-serves
 
+**Nexus** replaces ghcr.io as the container registry:
+- Images stay in-cluster — no external network pull, faster deploys
+- No ghcr.io auth issues (403 on push, Classic PAT requirement)
+- No `ghcr-pull` imagePullSecret needed — Nexus is cluster-local
+- No OCI source labels needed for repo linking
+- Push via `docker push nexus.internal:port/mfe-billing:rel-0.0.7`
+- Nexus UI for browsing images, tags, storage
+
 **What GitHub Actions still does:**
 - Build Docker image
-- Push to ghcr.io
+- Push to Nexus (instead of ghcr.io)
 - Update version in manifest file (triggers Argo sync)
 - Run tests
 
 **What GitHub Actions stops doing:**
 - kubectl apply (Argo CD does this)
-- kubeconfig secret (not needed)
+- kubeconfig secret (not needed for deploy — still needed for Nexus push unless using Argo Workflows)
 - deploy.sh (deleted)
 - record-deploy-event (Argo notifications replace this)
 - .env.services resolution (moves to Kustomize or Argo CD config)
+- ghcr.io login step
+- OCI label injection in Dockerfiles
+
+**What gets removed from repos:**
+- `LABEL org.opencontainers.image.source` from all Dockerfiles
+- `ghcr-pull` secret from K8s manifests
+- `imagePullSecrets` from all Deployment specs
+- ghcr.io PAT from GitHub secrets
 
 ### Phase 2: Argo Rollouts (for live environment)
 
@@ -97,6 +115,8 @@ spec:
 **Trade-off**: This replaces GitHub Actions entirely — builds run on the cluster instead of GitHub runners. Pros: no self-hosted runner needed, full K8s native. Cons: cluster pays for CI compute, GitHub Actions UI is familiar, more infra to manage.
 
 **Recommendation**: Defer Phase 3. GitHub Actions for build/push works fine. The self-hosted runner is already set up. Argo CD handles the deploy side. Revisit when the runner becomes a bottleneck or when you want to consolidate everything into K8s.
+
+**However**: if Argo Workflows is adopted, builds happen on the cluster — they can push to Nexus directly without network hops. This makes Phase 3 more attractive with Nexus in the picture. The self-hosted runner droplet ($24/mo) could be decommissioned.
 
 ## Argo CD Application Structure
 
@@ -178,13 +198,16 @@ Options:
 
 ## Migration Steps
 
-1. Install Argo CD on cluster (`kubectl create namespace argocd && kubectl apply -n argocd -f install.yaml`)
-2. Install Traefik (or verify it's already running if cluster came with it)
-3. Convert one service (mfe-api) to Argo CD Application + Traefik IngressRoute
-4. Verify: push manifest change → Argo syncs → Traefik routes traffic
-5. Convert remaining services
-6. Update GitHub Actions: remove deploy.sh step, add "update manifest version" step
-7. Set up Argo CD notifications (webhook to record deploys, or Slack)
-8. Remove: deploy.sh, kubeconfig secret, nginx ingress resources, cert-manager (if Traefik handles ACME)
-9. Set up ApplicationSet for preview environments
-10. (Phase 2) Convert live Deployments to Argo Rollouts
+1. Inventory: verify Traefik, Argo CD, Nexus are running, find their endpoints/ports
+2. Configure Nexus: create `mfe` Docker registry, test push/pull from runner
+3. Rebuild one image (mfe-api) → push to Nexus instead of ghcr.io
+4. Update mfe-api K8s manifest: image from Nexus, remove imagePullSecrets, switch Ingress → IngressRoute
+5. Create Argo CD Application for mfe-api pointing to manifest in mfe-infra repo
+6. Verify: push manifest change → Argo syncs → Traefik routes traffic → image pulled from Nexus
+7. Convert remaining services (same pattern)
+8. Update GitHub Actions: remove deploy.sh step, replace ghcr.io push with Nexus push, add "update manifest version" step
+9. Set up Argo CD notifications (webhook to record deploys, or Slack)
+10. Remove: deploy.sh, ghcr-pull secret, kubeconfig secret (if no longer needed), nginx ingress resources, cert-manager (if Traefik handles ACME), OCI labels from Dockerfiles
+11. Set up ApplicationSet for preview environments
+12. (Phase 2) Convert live Deployments to Argo Rollouts
+13. (Phase 3, optional) Argo Events + Workflows → decommission self-hosted runner
