@@ -43,4 +43,4 @@ Version format: `rel-0.0.2` (dotted) in data/config, `rel-0-0-2` (dashed) in DNS
 ## Next
 
 14. [Service Config](service-config.md) — move .env.services into package.json `mfe` field, per-MFE dependency granularity
-15. [Argo + Traefik + Nexus](argo-traefik.md) — GitOps deploys (Argo CD), canary rollouts, Traefik ingress, Nexus registry, replace custom deploy scripts + ghcr.io
+15. [Cluster Stack](cluster-stack.md) — Argo CD/Rollouts/Workflows/Events, Traefik, Nexus — replace custom deploy scripts + ghcr.io
