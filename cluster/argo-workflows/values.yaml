@@ -1,5 +1,7 @@
 server:
   enabled: true
+  authModes:
+    - server
   # Access via Traefik IngressRoute (see ingressroute.yaml)
 
 controller:
