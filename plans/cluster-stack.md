@@ -1,52 +1,56 @@
-# Plan: Argo Stack + Traefik + Nexus Migration
+# Plan: Full Argo + Traefik + Nexus
 
 ## Current State
 
-GitHub Actions does everything: build → push ghcr.io → kubectl apply → record deploy event. Custom deploy.sh, nginx ingress, cert-manager, custom DAG dashboard. ghcr.io has auth issues (403 on push for some repos, needs Classic PAT with write:packages).
+GitHub Actions does everything: build → push ghcr.io → kubectl apply → record deploy event. Custom deploy.sh, nginx ingress, cert-manager, custom DAG dashboard. ghcr.io has auth issues (403 on push for some repos, needs Classic PAT with write:packages). Self-hosted runner on DO droplet ($24/mo).
+
+## Target State
+
+No GitHub Actions. No self-hosted runner. Everything runs on the cluster.
+
+```
+Developer pushes tag "rel-0.0.12" to mfe-billing repo
+         ↓
+GitHub sends webhook to cluster
+         ↓
+Argo Events receives webhook, triggers Argo Workflow
+         ↓
+Argo Workflow (runs as pods on cluster):
+  1. git clone
+  2. npm test
+  3. kaniko build (no Docker daemon needed)
+  4. push image to Nexus (cluster-local, no network hop)
+  5. update services.json in mfe-infra, git push
+         ↓
+Argo CD detects change, syncs ConfigMap + Deployment
+         ↓
+Traefik routes traffic to new pod
+         ↓
+Browser picks up new URL on next page load
+```
 
 ## Stack
 
 | Component | What it does | Replaces |
 |---|---|---|
-| **Argo CD** | GitOps sync — watches git repo, applies manifests to cluster | deploy.sh, kubectl in CI, kubeconfig secret |
-| **Argo Rollouts** | Canary/blue-green deploys with automatic rollback | raw K8s Deployments, manual rollback |
-| **Argo Workflows** | DAG-based CI pipelines running on K8s | GitHub Actions build/push steps |
-| **Argo Events** | Event triggers (GitHub webhook → Argo Workflow) | GitHub Actions webhook triggers |
-| **Traefik** | Ingress controller with built-in TLS | nginx ingress, cert-manager |
+| **Argo CD** | GitOps sync — watches mfe-infra repo, applies manifests | deploy.sh, kubectl, kubeconfig secret |
+| **Argo Workflows** | CI pipelines + deploy DAG visualization | GitHub Actions, self-hosted runner, custom DAG dashboard |
+| **Argo Events** | GitHub webhook → triggers Argo Workflow | GitHub Actions triggers |
+| **Argo Rollouts** | Canary/blue-green deploys (live env only) | raw K8s Deployments |
+| **Traefik** | Cluster ingress with built-in TLS | nginx ingress controller, cert-manager |
 | **Nexus** | In-cluster container registry | ghcr.io, ghcr-pull secret, OCI labels, PAT auth |
 
-## What to Adopt
+## Traefik
 
-### Phase 1: Argo CD + Traefik + Nexus (do this first)
-
-GitHub Actions stays as CI (build + push). Argo CD takes over CD (deploy).
-
-```
-GitHub tag → GitHub Actions → build image → push to Nexus → update services.json → git push
-                                                                       ↓
-                                                              Argo CD syncs ConfigMap
-                                                              Argo CD syncs Deployment
-                                                              Traefik routes traffic
-```
-
-**Argo CD** replaces deploy.sh entirely:
-- Manifests live in `mfe-infra/k8s/` (already do)
-- Argo watches the repo, auto-syncs on push
-- One `Application` per service, or `ApplicationSet` to generate from directory structure
-- Preview environments: `ApplicationSet` with git branch generator
-- Rollback = git revert → Argo auto-syncs
-- Built-in DAG visualization of applications and their resources — may replace custom dashboard
-- Argo CD notifications (webhook/Slack) can replace deploy event recording
-
-**Traefik** replaces **nginx ingress controller** (the cluster-level router), NOT the per-pod nginx:
+Replaces **nginx ingress controller** (the cluster-level router), NOT the per-pod nginx:
 
 ```
 Browser → Traefik (cluster ingress) → K8s Service → nginx (per-pod, serves static files)
 ```
 
 Two different nginxes:
-- **nginx ingress controller** = cluster add-on that routes `*.mfe.fachwerk.dev` to Services. Traefik replaces this.
-- **nginx in Dockerfiles** = each MFE/host runs `FROM nginx:alpine` to serve static files. This stays — it's the app server.
+- **nginx ingress controller** = cluster add-on that routes `*.mfe.fachwerk.dev` to Services. **Traefik replaces this.**
+- **nginx in Dockerfiles** = each MFE/host runs `FROM nginx:alpine` to serve static files. **This stays.**
 
 Traefik benefits:
 - `IngressRoute` CRD instead of nginx Ingress annotations
@@ -55,60 +59,216 @@ Traefik benefits:
 - Traefik dashboard for debugging routing
 - Wildcard cert: single `Certificate` resource, Traefik auto-serves
 
-**Nexus** replaces ghcr.io as the container registry:
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: mfe-billing-preview
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`rel-0-0-7--mfe-billing.mfe.fachwerk.dev`)
+      kind: Rule
+      services:
+        - name: mfe-billing
+          port: 4000
+  tls:
+    secretName: mfe-wildcard-tls
+```
+
+## Nexus
+
+In-cluster container registry. Replaces ghcr.io entirely.
+
 - Images stay in-cluster — no external network pull, faster deploys
 - No ghcr.io auth issues (403 on push, Classic PAT requirement)
 - No `ghcr-pull` imagePullSecret needed — Nexus is cluster-local
 - No OCI source labels needed for repo linking
-- Push via `docker push nexus.internal:port/mfe-billing:rel-0.0.7`
+- Kaniko pushes directly from Argo Workflow pods — no Docker daemon, no network hop
 - Nexus UI for browsing images, tags, storage
 
-**GitHub Actions workflow (simplified):**
+## Argo Events + Workflows (CI pipeline)
+
+Replaces GitHub Actions entirely. Builds run as pods on the cluster.
+
+### EventSource — listens for GitHub webhooks
 
 ```yaml
-# .github/workflows/release.yml
-on:
-  push:
-    tags: ["rel-*"]
-
-jobs:
-  build:
-    runs-on: self-hosted
-    steps:
-      - uses: actions/checkout@v4
-      - run: docker build -t nexus.internal:port/$SERVICE:$TAG .
-      - run: docker push nexus.internal:port/$SERVICE:$TAG
-      - run: |
-          # Update services.json in mfe-infra with new version URL
-          # Commit + push → triggers Argo CD sync
+apiVersion: argoproj.io/v1alpha1
+kind: EventSource
+metadata:
+  name: github
+spec:
+  github:
+    mfe-repos:
+      repositories:
+        - owner: kristjanjansen
+          names:
+            - mfe-billing
+            - mfe-dashboard
+            - mfe-layout
+            - mfe-cookiebot
+            - mfe-api
+            - mfe-translations
+            - mfe-host-web
+      events: [create]
+      webhook:
+        endpoint: /github
+        port: "12000"
+      apiToken:
+        name: github-token
+        key: token
 ```
 
-**What GitHub Actions still does:**
-- Build Docker image
-- Push to Nexus (instead of ghcr.io)
-- Update `services.json` in mfe-infra (triggers Argo CD sync)
-- Run tests
+### Sensor — matches tag events, triggers workflow
 
-**What GitHub Actions stops doing:**
-- kubectl apply (Argo CD does this)
-- kubeconfig secret (not needed — only Nexus credentials needed)
-- deploy.sh (deleted)
-- record-deploy-event (Argo CD notifications replace this)
-- .env.services resolution (services.json replaces this)
-- ghcr.io login step
-- OCI label injection in Dockerfiles
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: release
+spec:
+  dependencies:
+    - name: tag-created
+      eventSourceName: github
+      eventName: mfe-repos
+      filters:
+        data:
+          - path: body.ref_type
+            type: string
+            value: [tag]
+          - path: body.ref
+            type: string
+            comparator: "="
+            template: "rel-*"
+  triggers:
+    - template:
+        name: run-pipeline
+        argoWorkflow:
+          operation: submit
+          source:
+            resource:
+              # references the WorkflowTemplate below
+          parameters:
+            - src:
+                dependencyName: tag-created
+                dataKey: body.repository.name
+              dest: spec.arguments.parameters.0.value
+            - src:
+                dependencyName: tag-created
+                dataKey: body.ref
+              dest: spec.arguments.parameters.1.value
+```
 
-**What gets removed from repos:**
-- `.env.services` files
-- `.env` files with `MFE_*_URL` vars
-- `LABEL org.opencontainers.image.source` from all Dockerfiles
-- `ghcr-pull` secret from K8s manifests
-- `imagePullSecrets` from all Deployment specs
-- ghcr.io PAT from GitHub secrets
-- `envPrefix: ["MFE_", "VITE_"]` from Vite configs
-- deploy.sh, record.sh, record.mjs
+### WorkflowTemplate — reused for all services
 
-### Phase 2: Argo Rollouts (for live environment)
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: mfe-release
+spec:
+  arguments:
+    parameters:
+      - name: service
+      - name: tag
+  templates:
+    - name: pipeline
+      dag:
+        tasks:
+          - name: clone
+            template: git-clone
+          - name: test
+            template: npm-test
+            dependencies: [clone]
+          - name: build
+            template: kaniko-build
+            dependencies: [test]
+          - name: update-services
+            template: update-services-json
+            dependencies: [build]
+
+    - name: git-clone
+      container:
+        image: alpine/git
+        command: [sh, -c, "git clone --branch {{workflow.parameters.tag}} https://github.com/kristjanjansen/{{workflow.parameters.service}}.git /work"]
+
+    - name: npm-test
+      container:
+        image: node:22-alpine
+        command: [sh, -c, "cd /work && npm ci && npm test"]
+
+    - name: kaniko-build
+      container:
+        image: gcr.io/kaniko-project/executor
+        args:
+          - --destination=nexus.internal:port/{{workflow.parameters.service}}:{{workflow.parameters.tag}}
+          - --context=/work
+
+    - name: update-services-json
+      container:
+        image: alpine/git
+        command: [sh, -c, |
+          git clone https://github.com/kristjanjansen/mfe-infra.git /infra
+          cd /infra
+          # update services.json with new version URL for this service
+          # jq '.["{{workflow.parameters.service}}"].url = "https://{{workflow.parameters.tag | replace "." "-"}}--{{workflow.parameters.service}}.mfe.fachwerk.dev"' services.json > tmp && mv tmp services.json
+          git add services.json
+          git commit -m "release {{workflow.parameters.service}} {{workflow.parameters.tag}}"
+          git push
+        ]
+```
+
+Argo Workflows UI shows the DAG in real-time — each step lights up green as it completes.
+
+## Argo CD (GitOps deploy)
+
+Watches `mfe-infra` repo. When `services.json` or any manifest changes, auto-syncs to cluster.
+
+### Application Structure
+
+```
+mfe-infra/
+  argocd/
+    apps/
+      mfe-host-web.yaml
+      mfe-billing.yaml
+      mfe-dashboard.yaml
+      mfe-layout.yaml
+      mfe-cookiebot.yaml
+      mfe-api.yaml
+      mfe-translations.yaml
+    appsets/
+      preview.yaml              # ApplicationSet for preview envs
+    projects/
+      mfe.yaml                  # AppProject restricting access
+```
+
+### Example Application
+
+```yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mfe-billing
+  namespace: argocd
+spec:
+  project: mfe
+  source:
+    repoURL: https://github.com/kristjanjansen/mfe-infra
+    path: k8s/overlays/preview/mfe-billing
+    targetRevision: main
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+```
+
+## Argo Rollouts (live environment)
 
 Replace `Deployment` with `Rollout` for production services:
 
@@ -133,226 +293,11 @@ spec:
 - Traefik integration via TraefikService for traffic splitting
 - Only needed for `live` environment, not previews
 
-### Phase 3: Argo Events + Workflows (deferred — drop GitHub Actions entirely)
+## services.json — single source of truth
 
-**Argo Workflows** gives two things: CI pipelines AND dependency-aware deploy orchestration with a visual DAG.
+One file drives runtime URLs, deploy ordering, DAG visualization, and version tracking.
 
-**Deploy DAG** — services deploy in dependency order, Argo Workflows UI shows the graph in real-time:
-
-```yaml
-apiVersion: argoproj.io/v1alpha1
-kind: Workflow
-spec:
-  templates:
-    - name: deploy-all
-      dag:
-        tasks:
-          - name: mfe-api
-            template: deploy
-          - name: mfe-translations
-            template: deploy
-          - name: mfe-billing
-            template: deploy
-            dependencies: [mfe-api, mfe-translations]
-          - name: mfe-dashboard
-            template: deploy
-            dependencies: [mfe-api, mfe-translations]
-          - name: mfe-cookiebot
-            template: deploy
-            dependencies: [mfe-translations]
-          - name: mfe-layout
-            template: deploy
-          - name: mfe-host-web
-            template: deploy
-            dependencies: [mfe-layout, mfe-billing, mfe-dashboard, mfe-cookiebot]
-```
-
-This replaces the custom GitHub Pages DAG dashboard — Argo Workflows UI renders the graph with live status (green/yellow/red) as each service deploys.
-
-**CI pipelines** — build/push per service:
-
-```yaml
-dag:
-  tasks:
-    - name: build
-      template: docker-build
-    - name: push
-      template: docker-push
-      dependencies: [build]
-    - name: update-manifest
-      template: git-commit
-      dependencies: [push]
-```
-
-**Argo Events**: GitHub webhook → EventSource → Sensor → triggers the right Workflow.
-
-**Trade-off**: Replaces GitHub Actions entirely — builds run on the cluster. Pros: no self-hosted runner needed, push to Nexus locally (no network hops), full K8s native, visual DAG. Cons: cluster pays for CI compute, more infra to manage.
-
-**With Nexus**: builds push to Nexus directly from the cluster. The self-hosted runner droplet ($24/mo) could be decommissioned.
-
-### services.json as single source of truth
-
-`services.json` drives everything — URLs, dependencies, versions:
-
-```json
-{
-  "mfe-api": {
-    "url": "https://rel-0-0-7--mfe-api.mfe.fachwerk.dev",
-    "dependencies": []
-  },
-  "mfe-translations": {
-    "url": "https://rel-0-0-7--mfe-translations.mfe.fachwerk.dev",
-    "dependencies": []
-  },
-  "mfe-billing": {
-    "url": "https://rel-0-0-7--mfe-billing.mfe.fachwerk.dev",
-    "dependencies": ["mfe-api", "mfe-translations"]
-  },
-  "mfe-dashboard": {
-    "url": "https://rel-0-0-7--mfe-dashboard.mfe.fachwerk.dev",
-    "dependencies": ["mfe-api", "mfe-translations"]
-  },
-  "mfe-cookiebot": {
-    "url": "https://rel-0-0-7--mfe-cookiebot.mfe.fachwerk.dev",
-    "dependencies": ["mfe-translations"]
-  },
-  "mfe-layout": {
-    "url": "https://rel-0-0-7--mfe-layout.mfe.fachwerk.dev",
-    "dependencies": []
-  },
-  "mfe-host-web": {
-    "url": "https://rel-0-0-10--mfe-host-web.mfe.fachwerk.dev",
-    "dependencies": ["mfe-layout", "mfe-billing", "mfe-dashboard", "mfe-cookiebot"]
-  }
-}
-```
-
-**What this file provides:**
-1. **Runtime URLs** — browser reads `.url` to load scripts, call API, fetch translations
-2. **Deploy ordering** — `.dependencies` determines which services deploy first
-3. **DAG visualization** — Argo Workflow generated from `.dependencies`
-4. **Version tracking** — version is embedded in the URL
-
-**Generation:** A script (`generate-workflow.mjs`) reads `services.json` → outputs the Argo Workflow YAML with DAG tasks and dependencies. Runs in CI when `services.json` changes.
-
-**Local dev** — same file, flat URLs (dependencies not needed in browser):
-
-```json
-{
-  "mfe-api": { "url": "http://localhost:5000" },
-  "mfe-billing": { "url": "http://localhost:4001" },
-  "mfe-dashboard": { "url": "http://localhost:4002" },
-  "mfe-cookiebot": { "url": "http://localhost:4003" },
-  "mfe-layout": { "url": "http://localhost:4000" },
-  "mfe-translations": { "url": "http://localhost:5001" }
-}
-```
-
-**Host code reads `.url`:**
-
-```ts
-window.__MFE_SERVICES__['mfe-billing'].url
-```
-
-## Argo CD Application Structure
-
-```
-mfe-infra/
-  argocd/
-    apps/                          # Application manifests
-      mfe-host-web.yaml
-      mfe-billing.yaml
-      mfe-dashboard.yaml
-      mfe-layout.yaml
-      mfe-cookiebot.yaml
-      mfe-api.yaml
-      mfe-translations.yaml
-    appsets/
-      preview.yaml                 # ApplicationSet for preview envs
-    projects/
-      mfe.yaml                     # AppProject restricting access
-```
-
-Each Application points to `mfe-infra/k8s/` manifests:
-
-```yaml
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: mfe-billing
-  namespace: argocd
-spec:
-  project: mfe
-  source:
-    repoURL: https://github.com/kristjanjansen/mfe-infra
-    path: k8s/overlays/preview/mfe-billing
-    targetRevision: main
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: default
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-```
-
-## Traefik IngressRoute
-
-Replaces current nginx Ingress:
-
-```yaml
-apiVersion: traefik.io/v1alpha1
-kind: IngressRoute
-metadata:
-  name: mfe-billing-preview
-spec:
-  entryPoints:
-    - websecure
-  routes:
-    - match: Host(`rel-0-0-7--mfe-billing.mfe.fachwerk.dev`)
-      kind: Rule
-      services:
-        - name: mfe-billing
-          port: 4000
-  tls:
-    secretName: mfe-wildcard-tls
-```
-
-## Runtime Service Config (replaces .env.services, .env, env vars)
-
-### The problem
-
-URLs are scattered across multiple mechanisms:
-- `.env` files with `MFE_*_URL` / `VITE_*_URL` vars (local dev)
-- `.env.services` with version → URL resolution (deploy)
-- `import.meta.env.MFE_API_URL` in code (build-time baking)
-- `envPrefix: ["MFE_", "VITE_"]` in Vite configs (custom prefix)
-
-Changing a dependency version means rebuilding the host Docker image.
-
-### The solution: one `services.json` file
-
-All URLs in one file. Same pattern for local dev and K8s deploy.
-
-**3 types of URLs the browser needs:**
-1. MFE scripts — host loads `<script src=".../mf-billing.js">`
-2. API — MFEs call `fetch(".../api/v1/bills")`
-3. Translations — i18next fetches `.../en/common.json`
-
-**Local dev** — checked into `mfe-host-web/public/config/services.json`:
-
-```json
-{
-  "mfe-api": { "url": "http://localhost:5000" },
-  "mfe-translations": { "url": "http://localhost:5001" },
-  "mfe-layout": { "url": "http://localhost:4000" },
-  "mfe-billing": { "url": "http://localhost:4001" },
-  "mfe-dashboard": { "url": "http://localhost:4002" },
-  "mfe-cookiebot": { "url": "http://localhost:4003" }
-}
-```
-
-**K8s deploy** — ConfigMap mounts over the same path with real URLs + dependencies:
+### K8s deploy — ConfigMap
 
 ```yaml
 apiVersion: v1
@@ -372,19 +317,31 @@ data:
     }
 ```
 
-ConfigMap is mounted into the host's nginx container at `/usr/share/nginx/html/config/services.json`, replacing the dev file. Same path, different content. Dependencies are used by `generate-workflow.mjs` to produce the Argo Workflow DAG, and ignored by the browser.
+Mounted into host's nginx at `/usr/share/nginx/html/config/services.json`.
 
-### Code changes
+### Local dev — checked into mfe-host-web
 
-**Host loads once before React mounts** (same pattern as country config):
+```json
+{
+  "mfe-api":          { "url": "http://localhost:5000" },
+  "mfe-translations": { "url": "http://localhost:5001" },
+  "mfe-layout":       { "url": "http://localhost:4000" },
+  "mfe-billing":      { "url": "http://localhost:4001" },
+  "mfe-dashboard":    { "url": "http://localhost:4002" },
+  "mfe-cookiebot":    { "url": "http://localhost:4003" }
+}
+```
+
+### Code
+
+Host loads once before React mounts:
 
 ```ts
-// host main.tsx
 const services = await fetch('/config/services.json').then(r => r.json())
 window.__MFE_SERVICES__ = services
 ```
 
-**Then everywhere — one way to get any URL:**
+Then everywhere:
 
 ```ts
 // host loading MFE script
@@ -397,64 +354,53 @@ fetch(window.__MFE_SERVICES__['mfe-api'].url + '/api/v1/bills')
 backend: { loadPath: window.__MFE_SERVICES__['mfe-translations'].url + '/{lng}/{ns}.json' }
 ```
 
-All MFEs share the same `window` (shadow DOM doesn't isolate JS globals), so `window.__MFE_SERVICES__` is accessible everywhere.
+### DAG generation
 
-### What gets deleted
+`generate-workflow.mjs` reads `services.json` → outputs Argo Workflow YAML with DAG tasks and dependencies. The Argo Workflows UI renders the dependency graph with live status.
 
-- All `.env.services` files (all repos)
-- All `.env` files with `MFE_*_URL` / `VITE_*_URL` vars
-- `envPrefix: ["MFE_", "VITE_"]` from Vite configs
-- All `import.meta.env.MFE_*` references in code
-- URL resolution logic in deploy scripts
-- `VITE_TRANSLATIONS_URL` env var
-- `VITE_API_URL` env var
-
-### What remains
-
-- `mfe-host-web/public/config/services.json` — localhost URLs for dev (checked in)
-- One ConfigMap per K8s environment — real URLs for deploy
-- `window.__MFE_SERVICES__['name'].url` — single source of truth in code
-- No env vars for URLs. No prefixes. No build-time baking.
-
-### How version updates work
+### Version updates
 
 To promote mfe-billing from `rel-0-0-7` to `rel-0-0-8`:
+1. Argo Workflow updates `services.json` automatically after build+push
+2. Argo CD syncs the ConfigMap
+3. Next page load picks up the new URL
 
-1. Edit the ConfigMap in `mfe-infra/k8s/` (change one URL)
-2. Push to git
-3. Argo CD syncs the ConfigMap
-4. Next page load picks up the new URL
+Host image stays the same. No rebuild.
 
-Host image stays the same. No rebuild. No redeploy of the host pod.
+**Note:** All service communication is browser-based (fetch calls to external URLs). No server-to-server calls between pods.
 
-**Note:** All service communication is browser-based (fetch calls to external URLs). No server-to-server calls between pods. K8s internal DNS is not relevant to this architecture.
+## What gets deleted
 
-## DAG Dashboard
+- **GitHub Actions**: all `.github/workflows/` in every repo
+- **Self-hosted runner**: DO droplet decommissioned ($24/mo saved)
+- **ghcr.io**: all images, PAT, ghcr-pull secret
+- **Custom scripts**: deploy.sh, record.sh, record.mjs, aggregate-datasets.mjs
+- **Custom dashboard**: index.js, index.html on GitHub Pages (Argo Workflows UI replaces it)
+- **Env var URL system**: `.env.services`, `.env` with `MFE_*_URL`, `envPrefix`, `import.meta.env.MFE_*`
+- **K8s resources**: nginx ingress controller, cert-manager (if Traefik handles ACME)
+- **Dockerfile labels**: `LABEL org.opencontainers.image.source`
+- **K8s secrets**: kubeconfig, ghcr-pull, ghcr PAT
 
-Argo CD has a built-in UI showing:
-- All Applications and their sync status
-- Resource tree per Application (Deployment → ReplicaSet → Pod)
-- Health status, last sync time, git commit
+## What remains
 
-This partially replaces the custom GitHub Pages dashboard. The custom dashboard still has value for showing **cross-service dependencies** (billing → api, billing → translations) which Argo CD doesn't model — each Application is independent.
-
-Options:
-1. Keep custom dashboard for dependency graph, use Argo CD UI for deploy status
-2. Model dependencies as Argo CD sync waves (api deploys before billing)
-3. Use Argo CD resource hooks to enforce ordering
+- `mfe-infra/` repo with: Argo manifests, K8s manifests, services.json ConfigMap, Traefik IngressRoutes
+- `mfe-host-web/public/config/services.json` — localhost URLs for dev
+- `window.__MFE_SERVICES__['name'].url` — single source of truth in code
+- nginx in Dockerfiles — serves static files per pod
+- Nexus — container registry
+- One WorkflowTemplate — reused for all services
+- One EventSource + one Sensor — triggers on any mfe repo tag
 
 ## Migration Steps
 
-1. Inventory: verify Traefik, Argo CD, Nexus are running, find their endpoints/ports
-2. Configure Nexus: create `mfe` Docker registry, test push/pull from runner
-3. Rebuild one image (mfe-api) → push to Nexus instead of ghcr.io
-4. Update mfe-api K8s manifest: image from Nexus, remove imagePullSecrets, switch Ingress → IngressRoute
-5. Create Argo CD Application for mfe-api pointing to manifest in mfe-infra repo
-6. Verify: push manifest change → Argo syncs → Traefik routes traffic → image pulled from Nexus
-7. Convert remaining services (same pattern)
-8. Update GitHub Actions: remove deploy.sh step, replace ghcr.io push with Nexus push, add "update manifest version" step
-9. Set up Argo CD notifications (webhook to record deploys, or Slack)
-10. Remove: deploy.sh, ghcr-pull secret, kubeconfig secret (if no longer needed), nginx ingress resources, cert-manager (if Traefik handles ACME), OCI labels from Dockerfiles
-11. Set up ApplicationSet for preview environments
-12. (Phase 2) Convert live Deployments to Argo Rollouts
-13. (Phase 3, optional) Argo Events + Workflows → decommission self-hosted runner
+1. **Inventory**: verify Traefik, Argo CD, Argo Workflows, Argo Events, Nexus are running. Find endpoints, ports, credentials.
+2. **Nexus**: create `mfe` Docker registry, test manual push/pull
+3. **Traefik**: convert one service (mfe-api) from nginx Ingress → Traefik IngressRoute. Verify routing + TLS.
+4. **Argo CD**: create Application for mfe-api pointing to mfe-infra manifests. Verify: push manifest change → auto-sync.
+5. **Kaniko build**: test building mfe-api with kaniko → push to Nexus (manual Workflow submission)
+6. **Argo Workflow**: create WorkflowTemplate for the full pipeline (clone → test → build → update services.json). Test with manual trigger.
+7. **Argo Events**: set up EventSource (GitHub webhook) + Sensor (tag filter). Push a test tag → verify full pipeline fires.
+8. **Convert remaining services**: same pattern for all 7 services.
+9. **services.json**: add `public/config/services.json` to host, update code to use `window.__MFE_SERVICES__`, remove env var URL system.
+10. **Argo Rollouts**: convert live Deployments to Rollouts with canary strategy.
+11. **Cleanup**: delete GitHub Actions workflows, decommission runner droplet, remove ghcr.io images + secrets, remove custom dashboard + deploy scripts.
