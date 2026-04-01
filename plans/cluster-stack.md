@@ -99,34 +99,126 @@ spec:
 - Traefik integration via TraefikService for traffic splitting
 - Only needed for `live` environment, not previews
 
-### Phase 3: Argo Events + Workflows (optional, evaluate later)
+### Phase 3: Argo Events + Workflows (deploy orchestration + DAG visualization)
 
-**Argo Events**: GitHub webhook → EventSource → Sensor → triggers Argo Workflow
+**Argo Workflows** gives two things: CI pipelines AND dependency-aware deploy orchestration with a visual DAG.
 
-**Argo Workflows**: DAG-based pipelines on K8s:
+**Deploy DAG** — services deploy in dependency order, Argo Workflows UI shows the graph in real-time:
+
 ```yaml
 apiVersion: argoproj.io/v1alpha1
 kind: Workflow
 spec:
   templates:
-    - name: pipeline
+    - name: deploy-all
       dag:
         tasks:
-          - name: build
-            template: docker-build
-          - name: push
-            template: docker-push
-            dependencies: [build]
-          - name: update-manifest
-            template: git-commit
-            dependencies: [push]
+          - name: mfe-api
+            template: deploy
+          - name: mfe-translations
+            template: deploy
+          - name: mfe-billing
+            template: deploy
+            dependencies: [mfe-api, mfe-translations]
+          - name: mfe-dashboard
+            template: deploy
+            dependencies: [mfe-api, mfe-translations]
+          - name: mfe-cookiebot
+            template: deploy
+            dependencies: [mfe-translations]
+          - name: mfe-layout
+            template: deploy
+          - name: mfe-host-web
+            template: deploy
+            dependencies: [mfe-layout, mfe-billing, mfe-dashboard, mfe-cookiebot]
 ```
 
-**Trade-off**: This replaces GitHub Actions entirely — builds run on the cluster instead of GitHub runners. Pros: no self-hosted runner needed, full K8s native. Cons: cluster pays for CI compute, GitHub Actions UI is familiar, more infra to manage.
+This replaces the custom GitHub Pages DAG dashboard — Argo Workflows UI renders the graph with live status (green/yellow/red) as each service deploys.
 
-**Recommendation**: Defer Phase 3. GitHub Actions for build/push works fine. The self-hosted runner is already set up. Argo CD handles the deploy side. Revisit when the runner becomes a bottleneck or when you want to consolidate everything into K8s.
+**CI pipelines** — build/push per service:
 
-**However**: if Argo Workflows is adopted, builds happen on the cluster — they can push to Nexus directly without network hops. This makes Phase 3 more attractive with Nexus in the picture. The self-hosted runner droplet ($24/mo) could be decommissioned.
+```yaml
+dag:
+  tasks:
+    - name: build
+      template: docker-build
+    - name: push
+      template: docker-push
+      dependencies: [build]
+    - name: update-manifest
+      template: git-commit
+      dependencies: [push]
+```
+
+**Argo Events**: GitHub webhook → EventSource → Sensor → triggers the right Workflow.
+
+**Trade-off**: Replaces GitHub Actions entirely — builds run on the cluster. Pros: no self-hosted runner needed, push to Nexus locally (no network hops), full K8s native, visual DAG. Cons: cluster pays for CI compute, more infra to manage.
+
+**With Nexus**: builds push to Nexus directly from the cluster. The self-hosted runner droplet ($24/mo) could be decommissioned.
+
+### services.json as single source of truth
+
+`services.json` drives everything — URLs, dependencies, versions:
+
+```json
+{
+  "mfe-api": {
+    "url": "https://rel-0-0-7--mfe-api.mfe.fachwerk.dev",
+    "dependencies": []
+  },
+  "mfe-translations": {
+    "url": "https://rel-0-0-7--mfe-translations.mfe.fachwerk.dev",
+    "dependencies": []
+  },
+  "mfe-billing": {
+    "url": "https://rel-0-0-7--mfe-billing.mfe.fachwerk.dev",
+    "dependencies": ["mfe-api", "mfe-translations"]
+  },
+  "mfe-dashboard": {
+    "url": "https://rel-0-0-7--mfe-dashboard.mfe.fachwerk.dev",
+    "dependencies": ["mfe-api", "mfe-translations"]
+  },
+  "mfe-cookiebot": {
+    "url": "https://rel-0-0-7--mfe-cookiebot.mfe.fachwerk.dev",
+    "dependencies": ["mfe-translations"]
+  },
+  "mfe-layout": {
+    "url": "https://rel-0-0-7--mfe-layout.mfe.fachwerk.dev",
+    "dependencies": []
+  },
+  "mfe-host-web": {
+    "url": "https://rel-0-0-10--mfe-host-web.mfe.fachwerk.dev",
+    "dependencies": ["mfe-layout", "mfe-billing", "mfe-dashboard", "mfe-cookiebot"]
+  }
+}
+```
+
+**What this file provides:**
+1. **Runtime URLs** — browser reads `.url` to load scripts, call API, fetch translations
+2. **Deploy ordering** — `.dependencies` determines which services deploy first
+3. **DAG visualization** — Argo Workflow generated from `.dependencies`
+4. **Version tracking** — version is embedded in the URL
+
+**Generation:** A script (`generate-workflow.mjs`) reads `services.json` → outputs the Argo Workflow YAML with DAG tasks and dependencies. Runs in CI when `services.json` changes.
+
+**Local dev** — same file, flat URLs (dependencies not needed in browser):
+
+```json
+{
+  "mfe-api": { "url": "http://localhost:5000" },
+  "mfe-billing": { "url": "http://localhost:4001" },
+  "mfe-dashboard": { "url": "http://localhost:4002" },
+  "mfe-cookiebot": { "url": "http://localhost:4003" },
+  "mfe-layout": { "url": "http://localhost:4000" },
+  "mfe-translations": { "url": "http://localhost:5001" }
+}
+```
+
+**Host code reads `.url`:**
+
+```ts
+window.__MFE_SERVICES__['mfe-billing'].url
+```
 
 ## Argo CD Application Structure
 
@@ -217,16 +309,16 @@ All URLs in one file. Same pattern for local dev and K8s deploy.
 
 ```json
 {
-  "mfe-layout": "http://localhost:4000",
-  "mfe-billing": "http://localhost:4001",
-  "mfe-dashboard": "http://localhost:4002",
-  "mfe-cookiebot": "http://localhost:4003",
-  "mfe-api": "http://localhost:5000",
-  "mfe-translations": "http://localhost:5001"
+  "mfe-api": { "url": "http://localhost:5000" },
+  "mfe-translations": { "url": "http://localhost:5001" },
+  "mfe-layout": { "url": "http://localhost:4000" },
+  "mfe-billing": { "url": "http://localhost:4001" },
+  "mfe-dashboard": { "url": "http://localhost:4002" },
+  "mfe-cookiebot": { "url": "http://localhost:4003" }
 }
 ```
 
-**K8s deploy** — ConfigMap mounts over the same path with real URLs:
+**K8s deploy** — ConfigMap mounts over the same path with real URLs + dependencies:
 
 ```yaml
 apiVersion: v1
@@ -236,16 +328,17 @@ metadata:
 data:
   services.json: |
     {
-      "mfe-layout": "https://rel-0-0-7--mfe-layout.mfe.fachwerk.dev",
-      "mfe-billing": "https://rel-0-0-7--mfe-billing.mfe.fachwerk.dev",
-      "mfe-dashboard": "https://rel-0-0-7--mfe-dashboard.mfe.fachwerk.dev",
-      "mfe-cookiebot": "https://rel-0-0-7--mfe-cookiebot.mfe.fachwerk.dev",
-      "mfe-api": "https://rel-0-0-7--mfe-api.mfe.fachwerk.dev",
-      "mfe-translations": "https://rel-0-0-7--mfe-translations.mfe.fachwerk.dev"
+      "mfe-api":          { "url": "https://rel-0-0-7--mfe-api.mfe.fachwerk.dev",          "dependencies": [] },
+      "mfe-translations": { "url": "https://rel-0-0-7--mfe-translations.mfe.fachwerk.dev", "dependencies": [] },
+      "mfe-layout":       { "url": "https://rel-0-0-7--mfe-layout.mfe.fachwerk.dev",       "dependencies": [] },
+      "mfe-billing":      { "url": "https://rel-0-0-7--mfe-billing.mfe.fachwerk.dev",      "dependencies": ["mfe-api", "mfe-translations"] },
+      "mfe-dashboard":    { "url": "https://rel-0-0-7--mfe-dashboard.mfe.fachwerk.dev",    "dependencies": ["mfe-api", "mfe-translations"] },
+      "mfe-cookiebot":    { "url": "https://rel-0-0-7--mfe-cookiebot.mfe.fachwerk.dev",    "dependencies": ["mfe-translations"] },
+      "mfe-host-web":     { "url": "https://rel-0-0-10--mfe-host-web.mfe.fachwerk.dev",    "dependencies": ["mfe-layout", "mfe-billing", "mfe-dashboard", "mfe-cookiebot"] }
     }
 ```
 
-ConfigMap is mounted into the host's nginx container at `/usr/share/nginx/html/config/services.json`, replacing the dev file. Same path, different content.
+ConfigMap is mounted into the host's nginx container at `/usr/share/nginx/html/config/services.json`, replacing the dev file. Same path, different content. Dependencies are used by `generate-workflow.mjs` to produce the Argo Workflow DAG, and ignored by the browser.
 
 ### Code changes
 
@@ -261,13 +354,13 @@ window.__MFE_SERVICES__ = services
 
 ```ts
 // host loading MFE script
-useMfeScript(window.__MFE_SERVICES__['mfe-billing'] + '/mf-billing.js')
+useMfeScript(window.__MFE_SERVICES__['mfe-billing'].url + '/mf-billing.js')
 
 // MFE calling API
-fetch(window.__MFE_SERVICES__['mfe-api'] + '/api/v1/bills')
+fetch(window.__MFE_SERVICES__['mfe-api'].url + '/api/v1/bills')
 
 // i18next config
-backend: { loadPath: window.__MFE_SERVICES__['mfe-translations'] + '/{lng}/{ns}.json' }
+backend: { loadPath: window.__MFE_SERVICES__['mfe-translations'].url + '/{lng}/{ns}.json' }
 ```
 
 All MFEs share the same `window` (shadow DOM doesn't isolate JS globals), so `window.__MFE_SERVICES__` is accessible everywhere.
@@ -286,7 +379,7 @@ All MFEs share the same `window` (shadow DOM doesn't isolate JS globals), so `wi
 
 - `mfe-host-web/public/config/services.json` — localhost URLs for dev (checked in)
 - One ConfigMap per K8s environment — real URLs for deploy
-- `window.__MFE_SERVICES__` — single source of truth in code
+- `window.__MFE_SERVICES__['name'].url` — single source of truth in code
 - No env vars for URLs. No prefixes. No build-time baking.
 
 ### How version updates work
