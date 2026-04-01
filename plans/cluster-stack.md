@@ -28,8 +28,18 @@ GitHub Actions does everything: build → push ghcr.io → kubectl apply → rec
 - Built-in DAG visualization of applications and their resources — may replace custom dashboard
 - Argo CD notifications (webhook/Slack) can replace deploy event recording
 
-**Traefik** replaces nginx ingress + possibly cert-manager:
-- `IngressRoute` CRD instead of nginx Ingress
+**Traefik** replaces **nginx ingress controller** (the cluster-level router), NOT the per-pod nginx:
+
+```
+Browser → Traefik (cluster ingress) → K8s Service → nginx (per-pod, serves static files)
+```
+
+Two different nginxes:
+- **nginx ingress controller** = cluster add-on that routes `*.mfe.fachwerk.dev` to Services. Traefik replaces this.
+- **nginx in Dockerfiles** = each MFE/host runs `FROM nginx:alpine` to serve static files. This stays — it's the app server.
+
+Traefik benefits:
+- `IngressRoute` CRD instead of nginx Ingress annotations
 - Built-in ACME/Let's Encrypt (no separate cert-manager needed)
 - Middleware chain for headers, CORS, rate limiting
 - Traefik dashboard for debugging routing
@@ -181,6 +191,47 @@ spec:
   tls:
     secretName: mfe-wildcard-tls
 ```
+
+## Runtime Service Config (replaces .env.services)
+
+Currently `.env.services` bakes dependency URLs into the host at build time. Changing a dependency version means rebuilding the host. Instead, make it runtime config.
+
+**ConfigMap** per environment with service URLs:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mfe-services
+data:
+  services.json: |
+    {
+      "mfe-layout": "https://rel-0-0-7--mfe-layout.mfe.fachwerk.dev",
+      "mfe-billing": "https://rel-0-0-7--mfe-billing.mfe.fachwerk.dev",
+      "mfe-dashboard": "https://rel-0-0-7--mfe-dashboard.mfe.fachwerk.dev",
+      "mfe-cookiebot": "https://rel-0-0-7--mfe-cookiebot.mfe.fachwerk.dev"
+    }
+```
+
+Mounted into the host's nginx at `/config/services.json` (alongside existing `config/ee.json`). Host fetches it at runtime before React mounts, same pattern as country config.
+
+```ts
+// host main.tsx — already does this for config, add services
+const services = await fetch('/config/services.json').then(r => r.json())
+window.__MFE_SERVICES__ = services
+```
+
+`useMfeScript()` reads from `window.__MFE_SERVICES__` instead of `import.meta.env.MFE_BILLING_URL`.
+
+**Benefits:**
+- Host never rebuilds when a dependency version changes
+- Argo CD updates the ConfigMap → nginx serves new JSON → next page load picks it up
+- Preview environments get their own ConfigMap with their own URLs
+- The DAG can be derived from ConfigMap contents
+- `.env.services` files deleted from all repos
+- No more `VITE_*` / `MFE_*` env vars for service URLs
+
+**For server-side dependencies** (MFE backend → API): use K8s internal DNS (`http://mfe-api:4000`). No URL resolution needed — services find each other by name within the cluster.
 
 ## DAG Dashboard
 
