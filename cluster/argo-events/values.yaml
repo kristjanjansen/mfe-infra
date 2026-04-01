@@ -1,0 +1,2 @@
+# Default values are fine for argo-events controller
+# EventSources and Sensors are created separately as application manifests

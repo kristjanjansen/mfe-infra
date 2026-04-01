@@ -1,0 +1,57 @@
+ports:
+  web:
+    port: 8000
+    expose:
+      default: true
+    exposedPort: 80
+  websecure:
+    port: 8443
+    expose:
+      default: true
+    exposedPort: 443
+    http:
+      tls:
+        enabled: true
+        certResolver: letsencrypt
+
+ingressRoute:
+  dashboard:
+    enabled: true
+    matchRule: Host(`traefik.mfe.fachwerk.dev`)
+    entryPoints:
+      - websecure
+
+providers:
+  kubernetesCRD:
+    enabled: true
+    allowCrossNamespace: true
+  kubernetesIngress:
+    enabled: true
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: kristjan.jansen@gmail.com
+      storage: /data/acme.json
+      tlsChallenge: true
+
+podSecurityContext:
+  fsGroup: 65532
+  fsGroupChangePolicy: OnRootMismatch
+
+deployment:
+  initContainers:
+    - name: volume-permissions
+      image: busybox:latest
+      command: ["sh", "-c", "touch /data/acme.json && chmod 600 /data/acme.json"]
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+      volumeMounts:
+        - name: data
+          mountPath: /data
+
+persistence:
+  enabled: true
+  size: 128Mi

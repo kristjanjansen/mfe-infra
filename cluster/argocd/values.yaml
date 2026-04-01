@@ -1,0 +1,14 @@
+server:
+  ingress:
+    enabled: false
+  # Access via: kubectl port-forward svc/argocd-server -n argocd 8080:443
+  # Or expose via Traefik IngressRoute (see ingressroute.yaml)
+
+configs:
+  params:
+    server.insecure: true  # TLS terminated at Traefik
+
+  repositories:
+    mfe-infra:
+      url: https://github.com/kristjanjansen/mfe-infra
+      type: git

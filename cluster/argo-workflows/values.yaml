@@ -1,0 +1,17 @@
+server:
+  enabled: true
+  # Access via Traefik IngressRoute (see ingressroute.yaml)
+
+controller:
+  workflowDefaults:
+    spec:
+      serviceAccountName: argo-workflow
+      ttlStrategy:
+        secondsAfterCompletion: 3600
+        secondsAfterSuccess: 3600
+        secondsAfterFailure: 7200
+
+workflow:
+  serviceAccount:
+    create: true
+    name: argo-workflow
