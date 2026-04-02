@@ -28,6 +28,9 @@ spec:
           - name: build-push
             template: kaniko-build
             dependencies: [clone]
+          - name: update-manifest
+            template: update-manifest
+            dependencies: [build-push]
 
     - name: git-clone
       container:
@@ -38,7 +41,6 @@ spec:
             git clone --depth 1 --branch {{workflow.parameters.tag}} \
               https://github.com/{{workflow.parameters.repo}}.git /work/src
             echo "Cloned {{workflow.parameters.repo}} at {{workflow.parameters.tag}}"
-            ls /work/src/
         volumeMounts:
           - name: work
             mountPath: /work
@@ -51,6 +53,44 @@ spec:
           - --context=/work/src
           - --destination=registry.registry.svc.cluster.local:5000/{{workflow.parameters.service}}:{{workflow.parameters.tag}}
           - --insecure
+        volumeMounts:
+          - name: work
+            mountPath: /work
+
+    - name: update-manifest
+      container:
+        image: alpine/git
+        env:
+          - name: GITHUB_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: github-token
+                key: token
+        command: [sh, -c]
+        args:
+          - |
+            set -e
+            SERVICE="{{workflow.parameters.service}}"
+            TAG="{{workflow.parameters.tag}}"
+            MANIFEST="k8s/apps/${SERVICE}/deployment.yaml"
+
+            git clone https://x-access-token:${GITHUB_TOKEN}@github.com/kristjanjansen/mfe-infra.git /work/infra
+            cd /work/infra
+
+            if [ ! -f "${MANIFEST}" ]; then
+              echo "No manifest at ${MANIFEST}, skipping"
+              exit 0
+            fi
+
+            sed -i "s|image: .*/${SERVICE}:.*|image: localhost:5000/${SERVICE}:${TAG}|" "${MANIFEST}"
+
+            git config user.email "argo@mfe.fachwerk.dev"
+            git config user.name "Argo Workflows"
+            git add "${MANIFEST}"
+            git diff --cached --quiet && echo "No changes" && exit 0
+            git commit -m "deploy ${SERVICE} ${TAG}"
+            git push
+            echo "Updated ${MANIFEST} → ${SERVICE}:${TAG}"
         volumeMounts:
           - name: work
             mountPath: /work
