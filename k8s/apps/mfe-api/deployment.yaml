@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mfe-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mfe-api
+  template:
+    metadata:
+      labels:
+        app: mfe-api
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: mfe-api
+          image: ghcr.io/kristjanjansen/mfe-api:rel-0.0.7
+          ports:
+            - containerPort: 4000

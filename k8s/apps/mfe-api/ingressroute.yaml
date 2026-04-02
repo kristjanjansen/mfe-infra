@@ -1,0 +1,32 @@
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: mfe-api
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`rel-0-0-7--mfe-api.mfe.fachwerk.dev`)
+      kind: Rule
+      services:
+        - name: mfe-api
+          port: 4000
+      middlewares:
+        - name: cors
+          namespace: mfe-api
+  tls:
+    certResolver: letsencrypt
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: cors
+spec:
+  headers:
+    accessControlAllowOriginList:
+      - "*"
+    accessControlAllowMethods:
+      - GET
+      - OPTIONS
+    accessControlAllowHeaders:
+      - "*"

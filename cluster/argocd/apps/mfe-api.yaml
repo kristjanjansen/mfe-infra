@@ -1,0 +1,19 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: mfe-api
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/kristjanjansen/mfe-infra
+    path: k8s/apps/mfe-api
+    targetRevision: main
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
